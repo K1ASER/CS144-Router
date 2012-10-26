@@ -10,3 +10,15 @@
 *.lai
 *.la
 *.a
+
+# Dependancy files
+*.d
+
+# Eclipse Files
+.project
+.cproject
+.settings
+
+# Compiled binaries
+sr
+sr.exe
