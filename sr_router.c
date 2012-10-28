@@ -28,8 +28,8 @@
 static const uint8_t broadcastEthernetAddress[ETHER_ADDR_LEN] = 
    { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
-static void handleReceivedArpPacket();
-static void handleReceivedIpPacket();
+static void handleReceivedArpPacket(void);
+static void handleReceivedIpPacket(void);
 
 /*---------------------------------------------------------------------
  * Method: sr_init(void)
@@ -83,10 +83,7 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
    assert(packet);
    assert(interface);
    
-   /* TODO: Hack to see what interface is */
-   interface[ETHER_ADDR_LEN] = '\0';
-   
-   printf("*** -> Received packet of length %d on interface %s\n", len, interface);
+   printf("*** -> Received packet of length %d \n", len);
    print_hdrs(packet, len);
    
    /* fill in code here */

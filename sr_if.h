@@ -37,11 +37,11 @@ struct sr_instance;
 
 struct sr_if
 {
-  char name[sr_IFACE_NAMELEN];
-  unsigned char addr[ETHER_ADDR_LEN];
-  uint32_t ip;
-  uint32_t speed;
-  struct sr_if* next;
+   char name[sr_IFACE_NAMELEN];
+   unsigned char addr[ETHER_ADDR_LEN];
+   uint32_t ip;
+   uint32_t speed;
+   struct sr_if* next;
 };
 
 struct sr_if* sr_get_interface(struct sr_instance* sr, const char* name);
