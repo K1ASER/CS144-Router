@@ -126,11 +126,11 @@ int sr_connect_to_server(struct sr_instance* sr,unsigned short port,
        sr_read_from_server_expect(sr, VNS_AUTH_STATUS) != 1)
         return -1; /* failed to receive expected message */
 
-    if(strlen(sr->template) > 0) {
+    if(strlen(sr->template_name) > 0) {
         /* send VNS_OPEN_TEMPLATE message to server */
         ot.mLen = htonl(sizeof(c_open_template));
         ot.mType = htonl(VNS_OPEN_TEMPLATE);
-        strncpy(ot.templateName, sr->template, 30);
+        strncpy(ot.templateName, sr->template_name, 30);
         strncpy(ot.mVirtualHostID, sr->host, IDSIZE);
         /* no source filters specified */
 
@@ -155,7 +155,7 @@ int sr_connect_to_server(struct sr_instance* sr,unsigned short port,
         return -1;
     }
 
-    if(strlen(sr->template) > 0)
+    if(strlen(sr->template_name) > 0)
         if(sr_read_from_server_expect(sr, VNS_RTABLE) != 1)
             return -1; /* needed to get the rtable */
 

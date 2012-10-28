@@ -141,7 +141,7 @@ struct sr_arpreq *sr_arpcache_insert(struct sr_arpcache *cache, unsigned char *m
    {
       memcpy(cache->entries[i].mac, mac, 6);
       cache->entries[i].ip = ip;
-      cache->entries[i].added = time(NULL );
+      cache->entries[i].added = time(NULL);
       cache->entries[i].valid = 1;
    }
    

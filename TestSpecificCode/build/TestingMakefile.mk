@@ -1,7 +1,7 @@
 SILENCE = @
 
 # CppUTest Inputs
-CPPUTEST_HOME = ~/workspaces/CS144/CppUTest
+CPPUTEST_HOME = TestSpecificCode/CppUTest
 CPP_PLATFORM = Gcc
 #CPPUTEST_EXE_FLAGS += -v
 CPPUTEST_USE_EXTENSIONS = Y
@@ -20,7 +20,7 @@ TEST_TARGET = $(COMPONENT_NAME)_tests
 
 SRC_DIRS = 
 
-SRC_FILES = sr_router.c sr_arpcache.c
+SRC_FILES = sr_router.c sr_arpcache.c sr_utils.c sr_if.c
 
 TEST_SRC_DIRS = $(TESTING_DIR)/tests
 
@@ -34,9 +34,10 @@ INCLUDE_DIRS = . \
 	$(CPPUTEST_HOME)/include
 
 CPPUTEST_CFLAGS += -g -Wall -ansi -D_DEBUG_ -D_GNU_SOURCE -D_LINUX_ -std=c99
+CPPUTEST_CXXFLAGS += -std=c++0x
 CPPUTEST_WARNINGFLAGS = -Wall -Wextra -Wshadow
 
-LD_LIBRARIES = -L $(CPPUTEST_HOME)/lib -l CppUTest -l CppUTestExt
+LD_LIBRARIES = -L $(CPPUTEST_HOME)/lib -l CppUTest -l CppUTestExt -lm -lpthread -lnsl -lresolv
 #LDFLAGS += $(CPPUTEST_HOME)/lib/libCppUTest.a -lstdc++
 
 include $(CPPUTEST_HOME)/build/MakefileWorker.mk 

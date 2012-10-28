@@ -109,11 +109,11 @@ int main(int argc, char **argv)
 
     /* -- set up routing table from file -- */
     if(template == NULL) {
-        sr.template[0] = '\0';
+        sr.template_name[0] = '\0';
         sr_load_rt_wrap(&sr, rtable);
     }
     else
-        strncpy(sr.template, template, 30);
+        strncpy(sr.template_name, template, 30);
 
     sr.topo_id = topo;
     strncpy(sr.host,host,32);
