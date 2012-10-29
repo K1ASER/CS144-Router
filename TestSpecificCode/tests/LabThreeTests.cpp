@@ -55,7 +55,8 @@ int sr_send_packet(struct sr_instance* sr, uint8_t* packet, unsigned int length,
          .withParameter("Length", (int) length)
          .withParameter("Interface", interface)
          .withParameter("EthernetProtocol", ethertype_arp)
-         .withParameter("HardwareType", (int) ntohs(arpPacket->ar_hrd));
+         .withParameter("TargetProtocolAddress", (int) ntohl(arpPacket->TargetIpAddress))
+         .withParameter("SenderProtocolAddress", (int) ntohl(arpPacket->SenderIpAddress));
    }
    else if (ethertype(packet) == ethertype_ip)
    {
@@ -154,8 +155,6 @@ TEST_GROUP(LabThreeTests)
       strcpy(tempRoutingEntry->interface, "eth2");
       tempRoutingEntry->next = NULL;
       testSimpleRouterState->routing_table->next->next = tempRoutingEntry;
-      
-      sr_init(testSimpleRouterState);
    }
    
    void teardown()
@@ -168,11 +167,73 @@ TEST_GROUP(LabThreeTests)
       free(testSimpleRouterState->routing_table->next);
       free(testSimpleRouterState->routing_table);
       
+      /* Free all pending ARP requests. I don't really want to do this since 
+       * it may cover up a malloc/free bug in my software, but I don't see a 
+       * way around it. */
+      while (testSimpleRouterState->cache.requests)
+      {
+         struct sr_arpreq* currReq = testSimpleRouterState->cache.requests;
+         sr_arpreq_destroy(&testSimpleRouterState->cache, currReq);
+      }
+      //sr_arpcache_destroy(&testSimpleRouterState->cache);
+      
       free(testSimpleRouterState);
       
       mock().checkExpectations();
       mock().clear();
    }
+   
+   uint8_t* buildIcmpRequestPacket()
+   {
+      /* Send an ICMP echo request from the Internet next hop router. */
+      uint8_t* packet = (uint8_t *) malloc(sizeof(sr_ethernet_hdr_t) + icmpEchoRequestPacketLength);
+      sr_ethernet_hdr_t* ethernetHdr = (sr_ethernet_hdr_t*)packet;
+      sr_ip_hdr_t* ipHdr = (sr_ip_hdr_t*) (packet + sizeof(sr_ethernet_hdr_t));
+      sr_icmp_hdr_t* icmpHdr = (sr_icmp_hdr_t*) (((uint8_t*) ipHdr) + sizeof(sr_ip_hdr_t));
+      sr_icmp_echo_hdr_t* echoHdr = (sr_icmp_echo_hdr_t*) (((uint8_t*) icmpHdr) + sizeof(sr_icmp_hdr_t));
+      
+      /* Ethernet Header */
+      memcpy(ethernetHdr->ether_dhost, ethernetThreeAddr, ETHER_ADDR_LEN);
+      memcpy(ethernetHdr->ether_shost, internetEthernetAddr, ETHER_ADDR_LEN);
+      ethernetHdr->ether_type = htons(ethertype_ip);
+      
+      /* IP Header */
+      ipHdr->ip_v = 4;
+      ipHdr->ip_hl = 5;
+      ipHdr->ip_tos = 0;
+      ipHdr->ip_len = icmpEchoRequestPacketLength;
+      ipHdr->ip_id = 0;
+      ipHdr->ip_off = IP_DF;
+      ipHdr->ip_ttl = 58;
+      ipHdr->ip_p = ip_protocol_icmp;
+      ipHdr->ip_sum = 0;
+      ipHdr->ip_src = htonl(myIpAddress);
+      ipHdr->ip_dst = htonl(interfaceThreeIpAddr);
+      ipHdr->ip_sum = cksum(ipHdr, sizeof(sr_ip_hdr_t));
+      
+      /* ICMP Header */
+      icmpHdr->icmp_type = (uint8_t)icmp_type_echo_request;
+      icmpHdr->icmp_code = 0;
+      icmpHdr->icmp_sum = 0;
+      
+      /* Echo Payload */
+      echoHdr->identifier = 0;
+      echoHdr->sequenceNumber = 1;
+      for (int i = 0; i < pingPayloadBytes; i++)
+      {
+         /* Linux style ping payload */
+         echoHdr->data[i] = i;
+      }
+      
+      /* Fill in the ICMP checksum */
+      icmpHdr->icmp_sum = cksum(icmpHdr, icmpEchoRequestPacketLength - sizeof(sr_ip_hdr_t));
+      
+      return packet;
+   }
+   
+   static const uint8_t pingPayloadBytes = 56;
+   static const uint8_t icmpEchoRequestPacketLength = sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) 
+      + sizeof(sr_icmp_echo_hdr_t) + pingPayloadBytes - 1;
    
    struct sr_instance* testSimpleRouterState;
 };
@@ -190,15 +251,15 @@ TEST(LabThreeTests, HandlesArpRequest)
    ethernetHdr->ether_type = htons(ethertype_arp);
    
    /* ARP Header */
-   arpHdr->ar_hrd = htons(arp_hrd_ethernet);
-   arpHdr->ar_pro = htons(ethertype_ip);
-   arpHdr->ar_hln = ETHER_ADDR_LEN;
-   arpHdr->ar_pln = IP_ADDR_LEN;
-   arpHdr->ar_op = htons(arp_op_request);
-   memcpy(arpHdr->ar_sha, internetEthernetAddr, ETHER_ADDR_LEN);
-   arpHdr->ar_sip = htonl(interfaceThreeGateway);
-   memset(arpHdr->ar_tha, 0x00, ETHER_ADDR_LEN);
-   arpHdr->ar_tip = htonl(interfaceThreeIpAddr);
+   arpHdr->HardwareType = htons(arp_hrd_ethernet);
+   arpHdr->ProtocolType = htons(ethertype_ip);
+   arpHdr->HardwareAddressLength = ETHER_ADDR_LEN;
+   arpHdr->ProtocolAddressLength = IP_ADDR_LEN;
+   arpHdr->OperationCode = htons(arp_op_request);
+   memcpy(arpHdr->SenderHardwareAddress, internetEthernetAddr, ETHER_ADDR_LEN);
+   arpHdr->SenderIpAddress = htonl(interfaceThreeGateway);
+   memset(arpHdr->TargetHardwareAddress, 0x00, ETHER_ADDR_LEN);
+   arpHdr->TargetIpAddress = htonl(interfaceThreeIpAddr);
    
    mock().expectOneCall("SendPacket")
       .withParameter("sr", this->testSimpleRouterState)
@@ -212,63 +273,36 @@ TEST(LabThreeTests, HandlesArpRequest)
    free(packet);
 }
 
-TEST(LabThreeTests, HandlesPingToRouter)
+TEST(LabThreeTests, HandlesPingToRouterWithArp)
 {
-   const uint8_t pingPayloadBytes = 56;
-   const uint8_t ipPacketLength = sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) 
-      + sizeof(sr_icmp_echo_hdr_t) + pingPayloadBytes - 1;
-   
-   /* Send an ICMP echo request from the Internet next hop router. */
-   uint8_t* packet = (uint8_t *) malloc(sizeof(sr_ethernet_hdr_t) + ipPacketLength);
-   sr_ethernet_hdr_t* ethernetHdr = (sr_ethernet_hdr_t*)packet;
-   sr_ip_hdr_t* ipHdr = (sr_ip_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t));
-   sr_icmp_hdr_t* icmpHdr = (sr_icmp_hdr_t*) (((uint8_t*) ipHdr) + sizeof(sr_ip_hdr_t));
-   sr_icmp_echo_hdr_t* echoHdr = (sr_icmp_echo_hdr_t*) (((uint8_t*) icmpHdr) + sizeof(sr_icmp_hdr_t));
-   
-   /* Ethernet Header */
-   memcpy(ethernetHdr->ether_dhost, ethernetThreeAddr, ETHER_ADDR_LEN);
-   memcpy(ethernetHdr->ether_shost, internetEthernetAddr, ETHER_ADDR_LEN);
-   ethernetHdr->ether_type = htons(ethertype_ip);
-   
-   /* IP Header */
-   ipHdr->ip_v = 4;
-   ipHdr->ip_hl = 5;
-   ipHdr->ip_tos = 0;
-   ipHdr->ip_len = ipPacketLength;
-   ipHdr->ip_id = 0;
-   ipHdr->ip_off = IP_DF;
-   ipHdr->ip_ttl = 58;
-   ipHdr->ip_p = ip_protocol_icmp;
-   ipHdr->ip_sum = 0;
-   ipHdr->ip_src = htonl(myIpAddress);
-   ipHdr->ip_dst = htonl(interfaceThreeIpAddr);
-   ipHdr->ip_sum = cksum(ipHdr, sizeof(sr_ip_hdr_t));
-   
-   /* ICMP Header */
-   icmpHdr->icmp_type = (uint8_t)icmp_type_echo_request;
-   icmpHdr->icmp_code = 0;
-   icmpHdr->icmp_sum = 0;
-   
-   /* Echo Payload */
-   echoHdr->identifier = 0;
-   echoHdr->sequenceNumber = 1;
-   for (int i = 0; i < pingPayloadBytes; i++)
-   {
-      /* Linux style ping payload */
-      echoHdr->data[i] = i;
-   }
-   
-   /* Fill in the ICMP checksum */
-   icmpHdr->icmp_sum = cksum(icmpHdr, ipPacketLength - sizeof(sr_ip_hdr_t));
+   uint8_t* packet = this->buildIcmpRequestPacket();
    
    mock().expectOneCall("SendPacket")
-      .withParameter("DestinationAddress", (int) myIpAddress)
-      .withParameter("InternetProtocol", ip_protocol_icmp)
-      .withParameter("IcmpType", icmp_type_echo_reply)
+      .withParameter("Interface", "eth3")
+      .withParameter("EthernetProtocol", ethertype_arp)
+      .withParameter("TargetProtocolAddress", (int) interfaceThreeGateway)
+      .withParameter("SenderProtocolAddress", (int) interfaceThreeIpAddr)
       .ignoreOtherParameters();
    
-   sr_handlepacket(this->testSimpleRouterState, packet, sizeof(sr_ethernet_hdr_t) + ipPacketLength,
-      (char *) "eth3");
+   sr_handlepacket(this->testSimpleRouterState, packet, 
+      sizeof(sr_ethernet_hdr_t) + icmpEchoRequestPacketLength, (char *) "eth3");
+   
+   free(packet);
+}
+
+TEST(LabThreeTests, HandlesPingRoundTrip)
+{
+   uint8_t* packet = this->buildIcmpRequestPacket();
+   
+   mock().expectOneCall("SendPacket")
+      .withParameter("Interface", "eth3")
+      .withParameter("EthernetProtocol", ethertype_arp)
+      .withParameter("TargetProtocolAddress", (int) interfaceThreeGateway)
+      .withParameter("SenderProtocolAddress", (int) interfaceThreeIpAddr)
+      .ignoreOtherParameters();
+   
+   sr_handlepacket(this->testSimpleRouterState, packet, 
+      sizeof(sr_ethernet_hdr_t) + icmpEchoRequestPacketLength, (char *) "eth3");
    
    free(packet);
 }

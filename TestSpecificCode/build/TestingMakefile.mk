@@ -20,7 +20,7 @@ TEST_TARGET = $(COMPONENT_NAME)_tests
 
 SRC_DIRS = 
 
-SRC_FILES = sr_router.c sr_arpcache.c sr_utils.c sr_if.c
+SRC_FILES = sr_router.c sr_arpcache.c sr_utils.c sr_if.c sr_rt.c
 
 TEST_SRC_DIRS = $(TESTING_DIR)/tests
 
@@ -38,6 +38,5 @@ CPPUTEST_CXXFLAGS += -std=c++0x
 CPPUTEST_WARNINGFLAGS = -Wall -Wextra -Wshadow
 
 LD_LIBRARIES = -L $(CPPUTEST_HOME)/lib -l CppUTest -l CppUTestExt -lm -lpthread -lnsl -lresolv
-#LDFLAGS += $(CPPUTEST_HOME)/lib/libCppUTest.a -lstdc++
 
 include $(CPPUTEST_HOME)/build/MakefileWorker.mk 
