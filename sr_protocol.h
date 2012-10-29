@@ -87,6 +87,12 @@ struct sr_icmp_hdr {
 } __attribute__ ((packed)) ;
 typedef struct sr_icmp_hdr sr_icmp_hdr_t;
 
+typedef struct __attribute__((packed))
+{
+   uint16_t identifier;
+   uint16_t sequenceNumber;
+   uint8_t data[1];
+} sr_icmp_echo_hdr_t;
 
 /* Structure of a type3 ICMP header
  */
@@ -168,6 +174,13 @@ enum sr_arp_opcode {
 
 enum sr_arp_hrd_fmt {
   arp_hrd_ethernet = 0x0001,
+};
+
+enum sr_icmp_type {
+   icmp_type_echo_reply = 0,
+   icmp_type_desination_unreachable = 3,
+   icmp_type_echo_request = 8,
+   icmp_type_time_exceeded = 11
 };
 
 

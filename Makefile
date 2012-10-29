@@ -91,7 +91,7 @@ sr.purify : $(OBJS)
 	$(PURIFY) $(CC) $(CFLAGS) -o sr.purify $(OBJS) $(LIBS)
 
 tests:
-	$(SILENCE)make -f TestSpecificCode/build/TestingMakefile.mk all
+	$(SILENCE)make -f TestSpecificCode/build/TestingMakefile.mk gcov
 
 .PHONY : clean clean-deps dist    
 
