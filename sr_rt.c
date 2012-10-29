@@ -131,6 +131,27 @@ struct in_addr gw, struct in_addr mask,char* if_name)
 
 } /* -- sr_add_entry -- */
 
+struct sr_rt* sr_get_rt(struct sr_instance* sr, const char* name)
+{
+   struct sr_rt* rt_walker = NULL;
+   
+   assert(sr);
+   assert(name);
+   
+   rt_walker = sr->routing_table;
+   
+   while (rt_walker)
+   {
+      if (!strncmp(rt_walker->interface, name, sr_IFACE_NAMELEN))
+      {
+         return rt_walker;
+      }
+      rt_walker = rt_walker->next;
+   }
+   
+   return NULL;
+}
+
 /*---------------------------------------------------------------------
  * Method:
  *

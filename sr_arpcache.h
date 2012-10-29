@@ -95,6 +95,7 @@ struct sr_arpreq {
                                    never sent, will be 0. */
     uint32_t times_sent;        /* Number of times this request was sent. You 
                                    should update this. */
+    const struct sr_if *interface; /**< Pointer to interface being ARPed */
     struct sr_packet *packets;  /* List of pkts waiting on this req to finish */
     struct sr_arpreq *next;
 };
@@ -121,7 +122,7 @@ struct sr_arpreq *sr_arpcache_queuereq(struct sr_arpcache *cache,
                          uint32_t ip,
                          uint8_t *packet,               /* borrowed */
                          unsigned int packet_len,
-                         char *iface);
+                         const char *iface);
 
 /* This method performs two functions:
    1) Looks up this IP in the request queue. If it is found, returns a pointer

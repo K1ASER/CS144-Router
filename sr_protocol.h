@@ -183,18 +183,24 @@ enum sr_icmp_type {
    icmp_type_time_exceeded = 11
 };
 
+enum sr_icmp_dest_unreach_code {
+   icmp_code_network_unreachable = 0,
+   icmp_code_destination_host_unreachable = 1,
+   icmp_code_destination_port_unreachable = 3
+};
+
 
 struct sr_arp_hdr
 {
-    unsigned short  ar_hrd;             /* format of hardware address   */
-    unsigned short  ar_pro;             /* format of protocol address   */
-    unsigned char   ar_hln;             /* length of hardware address   */
-    unsigned char   ar_pln;             /* length of protocol address   */
-    unsigned short  ar_op;              /* ARP opcode (command)         */
-    unsigned char   ar_sha[ETHER_ADDR_LEN];   /* sender hardware address      */
-    uint32_t        ar_sip;             /* sender IP address            */
-    unsigned char   ar_tha[ETHER_ADDR_LEN];   /* target hardware address      */
-    uint32_t        ar_tip;             /* target IP address            */
+   uint16_t HardwareType; /* format of hardware address   */
+   uint16_t ProtocolType; /* format of protocol address   */
+   uint8_t HardwareAddressLength; /* length of hardware address   */
+   uint8_t ProtocolAddressLength; /* length of protocol address   */
+   uint16_t OperationCode; /* ARP opcode (command)         */
+   uint8_t SenderHardwareAddress[ETHER_ADDR_LEN]; /* sender hardware address      */
+   uint32_t SenderIpAddress; /* sender IP address            */
+   uint8_t TargetHardwareAddress[ETHER_ADDR_LEN]; /* target hardware address      */
+   uint32_t TargetIpAddress; /* target IP address            */
 } __attribute__ ((packed)) ;
 typedef struct sr_arp_hdr sr_arp_hdr_t;
 

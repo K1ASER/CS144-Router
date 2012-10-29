@@ -659,8 +659,8 @@ int  sr_arp_req_not_for_us(struct sr_instance* sr,
     a_hdr = (struct sr_arp_hdr*)(packet + sizeof(struct sr_ethernet_hdr));
 
     if ( (e_hdr->ether_type == htons(ethertype_arp)) &&
-            (a_hdr->ar_op      == htons(arp_op_request))   &&
-            (a_hdr->ar_tip     != iface->ip ) )
+            (a_hdr->OperationCode      == htons(arp_op_request))   &&
+            (a_hdr->TargetIpAddress     != iface->ip ) )
     { return 1; }
 
     return 0;
