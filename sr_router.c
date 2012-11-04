@@ -165,6 +165,7 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
          && (memcmp(GET_ETHERNET_DEST_ADDR(packet), broadcastEthernetAddress, ETHER_ADDR_LEN) != 0)))
    {
       /* Packet not sent to our ethernet address? */
+      LOG_MESSAGE("Dropping packet due to invalid ethernet receive parameters.\n");
       return;
    }
    
@@ -184,6 +185,7 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
          
       default:
          /* We have no logic to handle other packet types. Drop the packet! */
+         LOG_MESSAGE("Dropping packet due to invalid Ethernet message type: 0x%X.\n", ethertype(packet));
          return;
    }
 
@@ -210,6 +212,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
       || (packet->HardwareAddressLength != ETHER_ADDR_LEN))
    {
       /* Received unsupported packet argument */
+      LOG_MESSAGE("ARP packet received with invalid parameters. Dropping.\n");
       return;
    }
    
@@ -217,7 +220,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
    {
       case arp_op_request:
       {
-         if (ntohl(packet->TargetIpAddress) == interface->ip)
+         if (packet->TargetIpAddress == interface->ip)
          {
             /* We're being ARPed! Prepare the reply! */
             uint8_t* replyPacket = (uint8_t *) malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t));
@@ -238,7 +241,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
             arpHdr->ProtocolAddressLength = IP_ADDR_LEN;
             arpHdr->OperationCode = htons(arp_op_reply);
             memcpy(arpHdr->SenderHardwareAddress, interface->addr, ETHER_ADDR_LEN);
-            arpHdr->SenderIpAddress = htonl(interface->ip);
+            arpHdr->SenderIpAddress = interface->ip;
             memcpy(arpHdr->TargetHardwareAddress, packet->SenderHardwareAddress, ETHER_ADDR_LEN);
             arpHdr->TargetIpAddress = packet->SenderIpAddress;
             
@@ -252,7 +255,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
       
       case arp_op_reply:
       {
-         if (ntohl(packet->TargetIpAddress) == interface->ip)
+         if (packet->TargetIpAddress == interface->ip)
          {
             struct sr_arpreq* requestPointer = sr_arpcache_insert(
                &sr->cache, packet->SenderHardwareAddress, ntohl(packet->SenderIpAddress));
@@ -286,6 +289,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
       default:
       {
          /* Unrecognized ARP type */
+         LOG_MESSAGE("Received packet with invalid ARP type: 0x%X.\n", ntohs(packet->OperationCode));
          break;
       }
    }
@@ -297,6 +301,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
    if (length < sizeof(sr_ip_hdr_t))
    {
       /* Not big enough to be an IP packet... */
+      LOG_MESSAGE("Received IP packet with invalid length. Dropping.\n");
       return;
    }
    
@@ -320,12 +325,14 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
       if (headerChecksum != calculatedChecksum)
       {
          /* Bad checksum... */
+         LOG_MESSAGE("IP checksum failed. Dropping received packet.\n");
          return;
       }
    }
    else
    {
       /* Something is way wrong with this packet. Throw it out. */
+      LOG_MESSAGE("Received IP packet with invalid length in header. Dropping.\n");
       return;
    }
    
@@ -333,10 +340,11 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
    {
       /* What do you think we are? A fancy, IPv6 router? Guess again! Process 
        * IPv4 packets only.*/
+      LOG_MESSAGE("Received non-IPv4 packet. Dropping.\n");
       return;
    }
    
-   if (ntohl(packet->ip_dst) == interface->ip)
+   if (packet->ip_dst == interface->ip)
    {
       /* Somebody must like me, because they're sending packets to my 
        * address! */
@@ -365,7 +373,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
          replyIpHeader->ip_ttl = DEFAULT_TTL;
          replyIpHeader->ip_p = ip_protocol_icmp;
          replyIpHeader->ip_sum = 0;
-         replyIpHeader->ip_src = ntohl(interface->ip);
+         replyIpHeader->ip_src = interface->ip;
          replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
          replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
          
@@ -407,7 +415,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
          replyIpHeader->ip_ttl = DEFAULT_TTL;
          replyIpHeader->ip_p = ip_protocol_icmp;
          replyIpHeader->ip_sum = 0;
-         replyIpHeader->ip_src = ntohl(interface->ip);
+         replyIpHeader->ip_src = interface->ip;
          replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
          replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
          
@@ -526,7 +534,9 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    }
    else
    {
-      /* Uh oh... someone's just about run out of time. */
+      /* Routing table told us to route this packet back the way it came. 
+       * That's probably wrong, so we assume the host is actually 
+       * unreachable. */
       uint8_t* replyPacket = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) 
          + sizeof(sr_icmp_t3_hdr_t));
       sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
@@ -539,13 +549,13 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
       replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
       replyIpHeader->ip_tos = 0;
-      replyIpHeader->ip_len = htons((uint16_t) length);
+      replyIpHeader->ip_len = htons(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
       replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
       replyIpHeader->ip_off = IP_DF;
       replyIpHeader->ip_ttl = DEFAULT_TTL;
       replyIpHeader->ip_p = ip_protocol_icmp;
       replyIpHeader->ip_sum = 0;
-      replyIpHeader->ip_src = ntohl(receivedInterface->ip);
+      replyIpHeader->ip_src = receivedInterface->ip;
       replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
       replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
       
@@ -601,7 +611,8 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
       struct sr_arpreq* arpRequestPtr = sr_arpcache_queuereq(&sr->cache, nextHopIpAddress,
          (uint8_t*) packet, length, interface->name);
       
-      arpRequestPtr->interface = interface;
+      arpRequestPtr->requestedInterface = interface;
+      arpRequestPtr->requestingInterface = NULL;
       
       LinkSendArpRequest(sr, arpRequestPtr);
       
@@ -630,7 +641,7 @@ void LinkSendArpRequest(struct sr_instance* sr, struct sr_arpreq* request)
    
    /* Ethernet Header */
    memcpy(ethernetHdr->ether_dhost, broadcastEthernetAddress, ETHER_ADDR_LEN);
-   memcpy(ethernetHdr->ether_shost, request->interface->addr, ETHER_ADDR_LEN);
+   memcpy(ethernetHdr->ether_shost, request->requestedInterface->addr, ETHER_ADDR_LEN);
    ethernetHdr->ether_type = htons(ethertype_arp);
    
    /* ARP Header */
@@ -639,13 +650,51 @@ void LinkSendArpRequest(struct sr_instance* sr, struct sr_arpreq* request)
    arpHdr->HardwareAddressLength = ETHER_ADDR_LEN;
    arpHdr->ProtocolAddressLength = IP_ADDR_LEN;
    arpHdr->OperationCode = htons(arp_op_request);
-   memcpy(arpHdr->SenderHardwareAddress, request->interface->addr, ETHER_ADDR_LEN);
-   arpHdr->SenderIpAddress = htonl(request->interface->ip);
-   memset(arpHdr->TargetHardwareAddress, 0, ETHER_ADDR_LEN); /* Not strictly necessary by RCF826 */
+   memcpy(arpHdr->SenderHardwareAddress, request->requestedInterface->addr, ETHER_ADDR_LEN);
+   arpHdr->SenderIpAddress = request->requestedInterface->ip;
+   memset(arpHdr->TargetHardwareAddress, 0, ETHER_ADDR_LEN); /* Not strictly necessary by RFC 826 */
    arpHdr->TargetIpAddress = htonl(request->ip);
    
    sr_send_packet(sr, arpPacket, sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t),
-      request->interface->name);
+      request->requestedInterface->name);
    
    free(arpPacket);
+}
+
+void NetworkSendIcmpPacket(struct sr_instance* sr, sr_icmp_type_t icmpType, sr_icmp_code_t icmpCode,
+   sr_ip_hdr_t* originalPacketPtr, const struct sr_if* interface)
+{
+   uint8_t* replyPacket = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) 
+      + sizeof(sr_icmp_t3_hdr_t));
+   sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
+   sr_icmp_t3_hdr_t* replyIcmpHeader = (sr_icmp_t3_hdr_t*) ((uint8_t*) replyIpHeader
+      + sizeof(sr_ip_hdr_t));
+   
+   LOG_MESSAGE("Router instructed to send ICMP packet.\n");
+   
+   /* Fill in IP header */
+   replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
+   replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
+   replyIpHeader->ip_tos = 0;
+   replyIpHeader->ip_len = htons(sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
+   replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
+   replyIpHeader->ip_off = IP_DF;
+   replyIpHeader->ip_ttl = DEFAULT_TTL;
+   replyIpHeader->ip_p = ip_protocol_icmp;
+   replyIpHeader->ip_sum = 0;
+   replyIpHeader->ip_src = interface->ip;
+   replyIpHeader->ip_dst = originalPacketPtr->ip_src; /* Already in network byte order. */
+   replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
+   
+   /* Fill in ICMP fields. */
+   replyIcmpHeader->icmp_type = icmp_type_desination_unreachable;
+   replyIcmpHeader->icmp_code = icmp_code_destination_host_unreachable;
+   replyIcmpHeader->icmp_sum = 0;
+   memcpy(replyIcmpHeader->data, originalPacketPtr, ICMP_DATA_SIZE);
+   replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, sizeof(sr_icmp_t3_hdr_t));
+   
+   linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket,
+      sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t), interface);
+   
+   free(replyPacket);
 }

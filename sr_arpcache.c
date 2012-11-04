@@ -11,6 +11,8 @@
 #include "sr_if.h"
 #include "sr_protocol.h"
 
+#define MAX_NUM_ARP_TRANSMISSIONS   (5)
+
 /* 
  This function gets called every second. For each request sent out, we keep
  checking whether we should resend an request or destroy the arp request.
@@ -19,11 +21,32 @@
 void sr_arpcache_sweepreqs(struct sr_instance *sr)
 {
    /* Fill this in */
-   struct sr_arpreq* requestIterator = sr->cache.requests;
+   struct sr_arpreq* requestIterator;
    
-   while (requestIterator != NULL)
+   for (requestIterator = sr->cache.requests; requestIterator != NULL; requestIterator =
+      requestIterator->next)
    {
-      
+      if (requestIterator->times_sent <= MAX_NUM_ARP_TRANSMISSIONS)
+      {
+         LinkSendArpRequest(sr, requestIterator);
+         requestIterator->times_sent++;
+      }
+      else
+      {
+         struct sr_packet * packetIterator;
+         fprintf(stderr, "ARP request timed out. Sending unreachable packets.\n");
+         for (packetIterator = requestIterator->packets; packetIterator != NULL ; packetIterator =
+            packetIterator->next)
+         {
+            if (requestIterator->requestingInterface != NULL)
+            {
+               NetworkSendIcmpPacket(sr, icmp_type_desination_unreachable,
+                  icmp_code_destination_host_unreachable,
+                  (sr_ip_hdr_t*) (packetIterator->buf + sizeof(sr_ethernet_hdr_t)),
+                  requestIterator->requestingInterface);
+            }
+         }
+      }
    }
 }
 
