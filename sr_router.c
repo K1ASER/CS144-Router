@@ -165,7 +165,7 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
          && (memcmp(GET_ETHERNET_DEST_ADDR(packet), broadcastEthernetAddress, ETHER_ADDR_LEN) != 0)))
    {
       /* Packet not sent to our ethernet address? */
-      LOG_MESSAGE("Dropping packet due to invalid ethernet receive parameters.\n");
+      LOG_MESSAGE("Dropping packet due to invalid Ethernet receive parameters.\n");
       return;
    }
    
@@ -264,7 +264,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
             {
                struct sr_packet* curr = requestPointer->packets;
                
-               /* Copy in the newly discovered ethernet address of the frame */
+               /* Copy in the newly discovered Ethernet address of the frame */
                memcpy(((sr_ethernet_hdr_t*) curr->buf)->ether_dhost,
                   packet->SenderHardwareAddress, ETHER_ADDR_LEN);
                
@@ -593,8 +593,8 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
    unsigned int length, const struct sr_if* const interface)
 {
    /* Need the gateway IP to do the ARP cache lookup. */
-   uint32_t nextHopIpAddress = sr_get_rt(sr, interface->name)->gw.s_addr;
-   struct sr_arpentry* arpEntry = sr_arpcache_lookup(&sr->cache, htonl(nextHopIpAddress));
+   uint32_t nextHopIpAddress = ntohl(sr_get_rt(sr, interface->name)->gw.s_addr);
+   struct sr_arpentry* arpEntry = sr_arpcache_lookup(&sr->cache, nextHopIpAddress);
    
    /* This function is only for ip packets, fill in the type */
    packet->ether_type = htons(ethertype_ip);
@@ -636,8 +636,9 @@ void LinkSendArpRequest(struct sr_instance* sr, struct sr_arpreq* request)
    sr_arp_hdr_t* arpHdr = (sr_arp_hdr_t*) (arpPacket + sizeof(sr_ethernet_hdr_t));
    assert(arpPacket);
    
-   LOG_MESSAGE("ARPing %u.%u.%u.%u.\n", (request->ip >> 24) & 0xFF, 
-      (request->ip >> 16) & 0xFF, (request->ip >> 8) & 0xFF, request->ip & 0xFF);
+   LOG_MESSAGE("ARPing %u.%u.%u.%u on %s\n", (request->ip >> 24) & 0xFF, 
+      (request->ip >> 16) & 0xFF, (request->ip >> 8) & 0xFF, request->ip & 0xFF, 
+      request->requestedInterface->name);
    
    /* Ethernet Header */
    memcpy(ethernetHdr->ether_dhost, broadcastEthernetAddress, ETHER_ADDR_LEN);

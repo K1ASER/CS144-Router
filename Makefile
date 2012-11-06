@@ -100,7 +100,7 @@ clean:
 	$(SILENCE)$(RM) $(STUFF_TO_CLEAN)
 	$(SILENCE)$(RM) -r $(OBJS_DIR)
 	$(SILENCE)$(RM) *.tar tags
-	$(SILENCE)make -f TestSpecificCode/build/TestingMakefile.mk clean
+#	$(SILENCE)make -f TestSpecificCode/build/TestingMakefile.mk clean
 
 dist-clean: clean
 	rm -f .*.swp sr_stub.tar.gz
