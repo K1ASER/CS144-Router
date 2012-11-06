@@ -146,8 +146,8 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
    assert(packet);
    assert(interface);
    
-   printf("*** -> Received packet of length %d \n", length);
-   print_hdrs(packet, length);
+   /*printf("*** -> Received packet of length %d \n", length);
+   print_hdrs(packet, length);*/
    
    /* fill in code here */
    
@@ -487,8 +487,8 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       replyIcmpHeader->icmp_sum = 0;
       
       /* Copy the old payload into the new one... */
-      memcpy(replyIcmpHeader + sizeof(sr_icmp_hdr_t), icmpHeader + sizeof(sr_icmp_hdr_t),
-         icmpPayloadLength);
+      memcpy(((uint8_t*) replyIcmpHeader) + sizeof(sr_icmp_hdr_t),
+         ((uint8_t*) icmpHeader) + sizeof(sr_icmp_hdr_t), icmpPayloadLength);
       
       /* ...then update the final checksum for the ICMP payload. */
       replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, icmpPayloadLength + sizeof(sr_icmp_hdr_t));
