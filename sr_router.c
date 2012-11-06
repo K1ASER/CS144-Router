@@ -36,7 +36,7 @@
  */
 
 #define MIN_IP_HEADER_LENGTH  (5)
-#define DEFAULT_TTL           (48)
+#define DEFAULT_TTL           (64)
 #define SUPPORTED_IP_VERSION  (4)
 
 /*
@@ -377,7 +377,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
          replyIpHeader->ip_tos = 0;
          replyIpHeader->ip_len = htons((uint16_t) length);
          replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-         replyIpHeader->ip_off = IP_DF;
+         replyIpHeader->ip_off = htons(IP_DF);
          replyIpHeader->ip_ttl = DEFAULT_TTL;
          replyIpHeader->ip_p = ip_protocol_icmp;
          replyIpHeader->ip_sum = 0;
@@ -419,7 +419,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
          replyIpHeader->ip_tos = 0;
          replyIpHeader->ip_len = htons((uint16_t) length);
          replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-         replyIpHeader->ip_off = IP_DF;
+         replyIpHeader->ip_off = htons(IP_DF);
          replyIpHeader->ip_ttl = DEFAULT_TTL;
          replyIpHeader->ip_p = ip_protocol_icmp;
          replyIpHeader->ip_sum = 0;
@@ -489,7 +489,7 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       replyIpHeader->ip_tos = 0;
       replyIpHeader->ip_len = htons((uint16_t) length);
       replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-      replyIpHeader->ip_off = IP_DF;
+      replyIpHeader->ip_off = htons(IP_DF);
       replyIpHeader->ip_ttl = DEFAULT_TTL;
       replyIpHeader->ip_p = ip_protocol_icmp;
       replyIpHeader->ip_sum = 0;
@@ -575,7 +575,7 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       replyIpHeader->ip_tos = 0;
       replyIpHeader->ip_len = htons(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
       replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-      replyIpHeader->ip_off = IP_DF;
+      replyIpHeader->ip_off = htons(IP_DF);
       replyIpHeader->ip_ttl = DEFAULT_TTL;
       replyIpHeader->ip_p = ip_protocol_icmp;
       replyIpHeader->ip_sum = 0;
@@ -705,7 +705,7 @@ void NetworkSendIcmpPacket(struct sr_instance* sr, sr_icmp_type_t icmpType, sr_i
    replyIpHeader->ip_tos = 0;
    replyIpHeader->ip_len = htons(sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
    replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-   replyIpHeader->ip_off = IP_DF;
+   replyIpHeader->ip_off = htons(IP_DF);
    replyIpHeader->ip_ttl = DEFAULT_TTL;
    replyIpHeader->ip_p = ip_protocol_icmp;
    replyIpHeader->ip_sum = 0;
