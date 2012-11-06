@@ -45,7 +45,15 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr)
                   (sr_ip_hdr_t*) (packetIterator->buf + sizeof(sr_ethernet_hdr_t)),
                   requestIterator->requestingInterface);
             }
+            
+            /* Free all memory associated with this packet (allocated on queue). */
+            free(packetIterator->buf);
+            free(packetIterator->iface);
+            free(packetIterator);
          }
+         
+         /* Bye bye ARP request. */
+         sr_arpreq_destroy(&sr->cache, requestIterator);
       }
    }
 }

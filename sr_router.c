@@ -147,7 +147,7 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
    assert(interface);
    
    printf("*** -> Received packet of length %d \n", length);
-   /* print_hdrs(packet, length); */
+   print_hdrs(packet, length);
    
    /* fill in code here */
    
@@ -207,7 +207,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
    }
    
    if ((ntohs(packet->ProtocolType) != ethertype_ip)
-      || (ntohs(packet->HardwareAddressLength) != arp_hrd_ethernet)
+      || (ntohs(packet->HardwareType) != arp_hrd_ethernet)
       || (packet->ProtocolAddressLength != IP_ADDR_LEN) 
       || (packet->HardwareAddressLength != ETHER_ADDR_LEN))
    {
@@ -509,7 +509,7 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    for (routeIter = sr->routing_table; routeIter; routeIter = routeIter->next)
    {
       if ((destinationIpAddress & routeIter->mask.s_addr) 
-         == (routeIter->dest.s_addr & routeIter->mask.s_addr))
+         == (ntohl(routeIter->dest.s_addr) & routeIter->mask.s_addr))
       {
          /* Prefix match. */
          /*TODO: Assumes the default route is the first entry. */
