@@ -624,8 +624,6 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
    packet->ether_type = htons(ethertype_ip);
    memcpy(packet->ether_shost, interface->addr, ETHER_ADDR_LEN);
    
-   print_hdrs((uint8_t*) packet, length);
-   
    if (arpEntry != NULL)
    {
       memcpy(packet->ether_dhost, arpEntry->mac, ETHER_ADDR_LEN);
