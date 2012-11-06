@@ -260,28 +260,36 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
             struct sr_arpreq* requestPointer = sr_arpcache_insert(
                &sr->cache, packet->SenderHardwareAddress, ntohl(packet->SenderIpAddress));
             
-            while (requestPointer->packets != NULL)
+            if (requestPointer != NULL)
             {
-               struct sr_packet* curr = requestPointer->packets;
+               LOG_MESSAGE("Received ARP reply, sending all queued packets.\n");
+               while (requestPointer->packets != NULL)
+               {
+                  struct sr_packet* curr = requestPointer->packets;
+                  
+                  /* Copy in the newly discovered Ethernet address of the frame */
+                  memcpy(((sr_ethernet_hdr_t*) curr->buf)->ether_dhost,
+                     packet->SenderHardwareAddress, ETHER_ADDR_LEN);
+                  
+                  /* The last piece of the pie is now complete. Ship it. */
+                  sr_send_packet(sr, curr->buf, curr->len, curr->iface);
+                  
+                  /* Forward list of packets. */
+                  requestPointer->packets = requestPointer->packets->next;
+                  
+                  /* Free all memory associated with this packet (allocated on queue). */
+                  free(curr->buf);
+                  free(curr->iface);
+                  free(curr);
+               }
                
-               /* Copy in the newly discovered Ethernet address of the frame */
-               memcpy(((sr_ethernet_hdr_t*) curr->buf)->ether_dhost,
-                  packet->SenderHardwareAddress, ETHER_ADDR_LEN);
-               
-               /* The last piece of the pie is now complete. Ship it. */
-               sr_send_packet(sr, curr->buf, curr->len, curr->iface);
-               
-               /* Forward list of packets. */
-               requestPointer->packets = requestPointer->packets->next;
-               
-               /* Free all memory associated with this packet (allocated on queue). */
-               free(curr->buf);
-               free(curr->iface);
-               free(curr);
+               /* Bye bye ARP request. */
+               sr_arpreq_destroy(&sr->cache, requestPointer);
             }
-            
-            /* Bye bye ARP request. */
-            sr_arpreq_destroy(&sr->cache, requestPointer);
+            else
+            {
+               LOG_MESSAGE("Received ARP reply, but found no request.\n");
+            }
          }
          break;
       }
