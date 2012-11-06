@@ -454,12 +454,28 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, const struct sr_if* const interface)
 {
    sr_icmp_hdr_t* icmpHeader = (sr_icmp_hdr_t*) (((uint8_t*) packet) + GET_IP_HEADER_LENGTH(packet));
-   int icmpPayloadLength = length - (GET_IP_HEADER_LENGTH(packet) + sizeof(sr_icmp_hdr_t));
+   int icmpLength = length - GET_IP_HEADER_LENGTH(packet);
+   
+   /* Check the integrity of the ICMP packet */
+   {
+      uint16_t headerChecksum = icmpHeader->icmp_sum;
+      uint16_t calculatedChecksum = 0;
+      icmpHeader->icmp_sum = 0;
+      
+      calculatedChecksum = cksum(icmpHeader, icmpLength);
+      
+      if (headerChecksum != calculatedChecksum)
+      {
+         /* Bad checksum... */
+         LOG_MESSAGE("ICMP checksum failed. Dropping received packet.\n");
+         return;
+      }
+   }
    
    if (icmpHeader->icmp_type == icmp_type_echo_request)
    {
       /* Send an echo Reply! */
-      uint8_t* replyPacket = malloc(length + sizeof(sr_ethernet_hdr_t));
+      uint8_t* replyPacket = malloc(icmpLength + sizeof(sr_ip_hdr_t) + sizeof(sr_ethernet_hdr_t));
       sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
       sr_icmp_hdr_t* replyIcmpHeader = (sr_icmp_hdr_t*) ((uint8_t*) replyIpHeader
          + sizeof(sr_ip_hdr_t));
@@ -488,10 +504,10 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       
       /* Copy the old payload into the new one... */
       memcpy(((uint8_t*) replyIcmpHeader) + sizeof(sr_icmp_hdr_t),
-         ((uint8_t*) icmpHeader) + sizeof(sr_icmp_hdr_t), icmpPayloadLength);
+         ((uint8_t*) icmpHeader) + sizeof(sr_icmp_hdr_t), icmpLength - sizeof(sr_icmp_hdr_t));
       
       /* ...then update the final checksum for the ICMP payload. */
-      replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, icmpPayloadLength + sizeof(sr_icmp_hdr_t));
+      replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, icmpLength);
       
       /* Reply payload built. Ship it! */
       linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket, length + sizeof(sr_ethernet_hdr_t),
@@ -608,7 +624,7 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
    packet->ether_type = htons(ethertype_ip);
    memcpy(packet->ether_shost, interface->addr, ETHER_ADDR_LEN);
    
-   print_hdrs(packet, length);
+   print_hdrs((uint8_t*) packet, length);
    
    if (arpEntry != NULL)
    {
