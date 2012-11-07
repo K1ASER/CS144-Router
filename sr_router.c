@@ -21,6 +21,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "sr_if.h"
 #include "sr_rt.h"
@@ -85,6 +86,8 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, const struct sr_if* const interface);
 static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, const struct sr_if* const receivedInterface);
+static bool networkIpDesinationIsUs(struct sr_instance* sr, const sr_ip_hdr_t* const packet);
+static int networkGetMaskLength(uint32_t mask);
 
 /*
  *-----------------------------------------------------------------------------
@@ -164,7 +167,7 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
       || ((memcmp(GET_ETHERNET_DEST_ADDR(packet), receivedInterfaceEntry->addr, ETHER_ADDR_LEN) != 0)
          && (memcmp(GET_ETHERNET_DEST_ADDR(packet), broadcastEthernetAddress, ETHER_ADDR_LEN) != 0)))
    {
-      /* Packet not sent to our ethernet address? */
+      /* Packet not sent to our Ethernet address? */
       LOG_MESSAGE("Dropping packet due to invalid Ethernet receive parameters.\n");
       return;
    }
@@ -173,13 +176,13 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
    {
       case ethertype_arp:
          /* Pass the packet to the next layer, strip the low level header. */
-         linkHandleReceivedArpPacket(sr, (sr_arp_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t)), 
+         linkHandleReceivedArpPacket(sr, (sr_arp_hdr_t*) (packet + sizeof(sr_ethernet_hdr_t)),
             length - sizeof(sr_ethernet_hdr_t), receivedInterfaceEntry);
          break;
          
       case ethertype_ip:
          /* Pass the packet to the next layer, strip the low level header. */
-         networkHandleReceivedIpPacket(sr, (sr_ip_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t)), 
+         networkHandleReceivedIpPacket(sr, (sr_ip_hdr_t*) (packet + sizeof(sr_ethernet_hdr_t)),
             length - sizeof(sr_ethernet_hdr_t), receivedInterfaceEntry);
          break;
          
@@ -189,7 +192,7 @@ void sr_handlepacket(struct sr_instance* sr, uint8_t * packet/* lent */, unsigne
          return;
    }
 
-}/* end sr_ForwardPacket */
+}/* end sr_handlepacket */
 
 /*
  *-----------------------------------------------------------------------------
@@ -352,7 +355,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
       return;
    }
    
-   if (packet->ip_dst == interface->ip)
+   if (networkIpDesinationIsUs(sr, packet))
    {
       /* Somebody must like me, because they're sending packets to my 
        * address! */
@@ -362,40 +365,10 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
       }
       else
       {
-         /* I don't process anything else! Send port unreachable */
-         uint8_t* replyPacket = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) 
-            + sizeof(sr_icmp_t3_hdr_t));
-         sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
-         sr_icmp_t3_hdr_t* replyIcmpHeader = (sr_icmp_t3_hdr_t*) ((uint8_t*) replyIpHeader
-            + sizeof(sr_ip_hdr_t));
-         
-         LOG_MESSAGE("Received non-ICMP echo packet. Sending ICMP port unreachable.\n");
-         
-         /* Fill in IP header */
-         replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
-         replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
-         replyIpHeader->ip_tos = 0;
-         replyIpHeader->ip_len = htons((uint16_t) length);
-         replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-         replyIpHeader->ip_off = htons(IP_DF);
-         replyIpHeader->ip_ttl = DEFAULT_TTL;
-         replyIpHeader->ip_p = ip_protocol_icmp;
-         replyIpHeader->ip_sum = 0;
-         replyIpHeader->ip_src = interface->ip;
-         replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
-         replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
-         
-         /* Fill in ICMP fields. */
-         replyIcmpHeader->icmp_type = icmp_type_desination_unreachable;
-         replyIcmpHeader->icmp_code = icmp_code_destination_port_unreachable;
-         replyIcmpHeader->icmp_sum = 0;
-         memcpy(replyIcmpHeader->data, packet, ICMP_DATA_SIZE);
-         replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, sizeof(sr_icmp_t3_hdr_t));
-         
-         linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket,
-            sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t), interface);
-         
-         free(replyPacket);
+         /* I don't process anything else! Send port unreachable. */
+         LOG_MESSAGE("Received Non-ICMP packet destined for me. Sending ICMP port unreachable.\n");
+         NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_port_unreachable, packet,
+            interface);
       }
    }
    else
@@ -527,17 +500,24 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, const struct sr_if* const receivedInterface)
 {
    uint32_t destinationIpAddress = ntohl(packet->ip_dst);
+   int networkMaskLength = -1;
    struct sr_rt* forwardRoute = NULL;
    struct sr_rt* routeIter;
    
    for (routeIter = sr->routing_table; routeIter; routeIter = routeIter->next)
    {
-      if ((destinationIpAddress & routeIter->mask.s_addr) 
-         == (ntohl(routeIter->dest.s_addr) & routeIter->mask.s_addr))
+      /* Assure the route we are about to check has a longer mask then the 
+       * last one we chose.  This is so we can find the longest prefix match. */
+      if (networkGetMaskLength(routeIter->mask.s_addr) > networkMaskLength)
       {
-         /* Prefix match. */
-         /*TODO: Assumes the default route is the first entry. */
-         forwardRoute = routeIter;
+         /* Mask is longer, now see if the destination matches. */
+         if ((destinationIpAddress & routeIter->mask.s_addr) 
+            == (ntohl(routeIter->dest.s_addr) & routeIter->mask.s_addr))
+         {
+            /* Longer prefix match found. */
+            forwardRoute = routeIter;
+            networkMaskLength = networkGetMaskLength(routeIter->mask.s_addr);
+         }
       }
    }
    
@@ -561,40 +541,9 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       /* Routing table told us to route this packet back the way it came. 
        * That's probably wrong, so we assume the host is actually 
        * unreachable. */
-      uint8_t* replyPacket = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) 
-         + sizeof(sr_icmp_t3_hdr_t));
-      sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
-      sr_icmp_t3_hdr_t* replyIcmpHeader = (sr_icmp_t3_hdr_t*) ((uint8_t*) replyIpHeader
-         + sizeof(sr_ip_hdr_t));
-      
       LOG_MESSAGE("Routing decision could not be made. Sending ICMP Host unreachable.\n");
-      
-      /* Fill in IP header */
-      replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
-      replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
-      replyIpHeader->ip_tos = 0;
-      replyIpHeader->ip_len = htons(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
-      replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-      replyIpHeader->ip_off = htons(IP_DF);
-      replyIpHeader->ip_ttl = DEFAULT_TTL;
-      replyIpHeader->ip_p = ip_protocol_icmp;
-      replyIpHeader->ip_sum = 0;
-      replyIpHeader->ip_src = receivedInterface->ip;
-      replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
-      replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
-      
-      /* Fill in ICMP fields. */
-      replyIcmpHeader->icmp_type = icmp_type_desination_unreachable;
-      replyIcmpHeader->icmp_code = icmp_code_destination_host_unreachable;
-      replyIcmpHeader->icmp_sum = 0;
-      memcpy(replyIcmpHeader->data, packet, ICMP_DATA_SIZE);
-      replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, sizeof(sr_icmp_t3_hdr_t));
-      
-      linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket,
-         sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t), receivedInterface);
-      
-      free(replyPacket);
-      
+      NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_host_unreachable, packet, 
+         receivedInterface);
    }
 }
 
@@ -636,7 +585,7 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
          (uint8_t*) packet, length, interface->name);
       
       arpRequestPtr->requestedInterface = interface;
-      arpRequestPtr->requestingInterface = NULL;
+      arpRequestPtr->requestingInterface = NULL; /* TODO! */
       
       LinkSendArpRequest(sr, arpRequestPtr);
       
@@ -686,7 +635,7 @@ void LinkSendArpRequest(struct sr_instance* sr, struct sr_arpreq* request)
    free(arpPacket);
 }
 
-void NetworkSendIcmpPacket(struct sr_instance* sr, sr_icmp_type_t icmpType, sr_icmp_code_t icmpCode,
+void NetworkSendTypeThreeIcmpPacket(struct sr_instance* sr, sr_icmp_code_t icmpCode,
    sr_ip_hdr_t* originalPacketPtr, const struct sr_if* interface)
 {
    uint8_t* replyPacket = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) 
@@ -694,8 +643,6 @@ void NetworkSendIcmpPacket(struct sr_instance* sr, sr_icmp_type_t icmpType, sr_i
    sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
    sr_icmp_t3_hdr_t* replyIcmpHeader = (sr_icmp_t3_hdr_t*) ((uint8_t*) replyIpHeader
       + sizeof(sr_ip_hdr_t));
-   
-   LOG_MESSAGE("Router instructed to send ICMP packet.\n");
    
    /* Fill in IP header */
    replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
@@ -713,7 +660,7 @@ void NetworkSendIcmpPacket(struct sr_instance* sr, sr_icmp_type_t icmpType, sr_i
    
    /* Fill in ICMP fields. */
    replyIcmpHeader->icmp_type = icmp_type_desination_unreachable;
-   replyIcmpHeader->icmp_code = icmp_code_destination_host_unreachable;
+   replyIcmpHeader->icmp_code = icmpCode;
    replyIcmpHeader->icmp_sum = 0;
    memcpy(replyIcmpHeader->data, originalPacketPtr, ICMP_DATA_SIZE);
    replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, sizeof(sr_icmp_t3_hdr_t));
@@ -722,4 +669,43 @@ void NetworkSendIcmpPacket(struct sr_instance* sr, sr_icmp_type_t icmpType, sr_i
       sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t), interface);
    
    free(replyPacket);
+}
+
+/**
+ * networkIpDesinationIsUs()\n
+ * IP Stack Level: Network (IP)\n
+ * @brief Function checks if any of our IP addresses matches the packet's destination IP.
+ * @param sr pointer to simple router state.
+ * @param packet pointer to received packet.
+ * @return true if we were the destination of this packet. false otherwise.
+ */
+static bool networkIpDesinationIsUs(struct sr_instance* sr,
+   const sr_ip_hdr_t* const packet)
+{
+   struct sr_if* interfaceIterator;
+   
+   for (interfaceIterator = sr->if_list; interfaceIterator != NULL; interfaceIterator =
+      interfaceIterator->next)
+   {
+      if (packet->ip_dst == interfaceIterator->ip)
+      {
+         return true;
+      }
+   }
+   
+   return false;
+}
+
+static int networkGetMaskLength(uint32_t mask)
+{
+   int ret = 0;
+   uint32_t bitScanner = 0x80000000;
+   
+   while ((bitScanner != 0) && ((bitScanner & mask) != 0))
+   {
+      bitScanner >>= 1;
+      ret++;
+   }
+   
+   return ret;
 }

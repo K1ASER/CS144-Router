@@ -68,7 +68,7 @@ int sr_read_from_server(struct sr_instance*);
 void sr_init(struct sr_instance*);
 void sr_handlepacket(struct sr_instance*, uint8_t *, unsigned int, char*);
 void LinkSendArpRequest(struct sr_instance* sr, struct sr_arpreq* request);
-void NetworkSendIcmpPacket(struct sr_instance* sr, sr_icmp_type_t icmpType, sr_icmp_code_t icmpCode,
+void NetworkSendTypeThreeIcmpPacket(struct sr_instance* sr, sr_icmp_code_t icmpCode,
    sr_ip_hdr_t* originalPacketPtr, const struct sr_if* interface);
 
 /* -- sr_if.c -- */

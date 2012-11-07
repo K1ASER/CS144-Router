@@ -40,8 +40,7 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr)
          {
             if (requestIterator->requestingInterface != NULL)
             {
-               NetworkSendIcmpPacket(sr, icmp_type_desination_unreachable,
-                  icmp_code_destination_host_unreachable,
+               NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_host_unreachable,
                   (sr_ip_hdr_t*) (packetIterator->buf + sizeof(sr_ethernet_hdr_t)),
                   requestIterator->requestingInterface);
             }
