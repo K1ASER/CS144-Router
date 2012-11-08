@@ -96,7 +96,6 @@ struct sr_arpreq {
     uint32_t times_sent;        /* Number of times this request was sent. You 
                                    should update this. */
     const struct sr_if *requestedInterface; /**< Pointer to interface being ARPed. */
-    const struct sr_if *requestingInterface; /**< Pointer to interface packet was originally received. */
     struct sr_packet *packets;  /* List of pkts waiting on this req to finish */
     struct sr_arpreq *next;
 };
