@@ -101,7 +101,7 @@ struct sr_arpreq *sr_arpcache_queuereq(struct sr_arpcache *cache, uint32_t ip, u
    pthread_mutex_lock(&(cache->lock));
    
    struct sr_arpreq *req;
-   for (req = cache->requests; req != NULL ; req = req->next)
+   for (req = cache->requests; req != NULL; req = req->next)
    {
       if (req->ip == ip)
       {
