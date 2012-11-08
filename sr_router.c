@@ -339,6 +339,12 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
          LOG_MESSAGE("IP checksum failed. Dropping received packet.\n");
          return;
       }
+      else
+      {
+         /* Put it back. This is so if we send an ICMP message which contains 
+          * this packet's header, it can be as we received it. */
+         packet->ip_sum = headerChecksum;
+      }
    }
    else
    {
@@ -584,13 +590,17 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
       struct sr_arpreq* arpRequestPtr = sr_arpcache_queuereq(&sr->cache, nextHopIpAddress,
          (uint8_t*) packet, length, interface->name);
       
-      arpRequestPtr->requestedInterface = interface;
-      arpRequestPtr->requestingInterface = NULL; /* TODO! */
-      
-      LinkSendArpRequest(sr, arpRequestPtr);
-      
-      arpRequestPtr->times_sent = 1;
-      arpRequestPtr->sent = time(NULL);
+      if (arpRequestPtr->times_sent == 0)
+      {
+         /* New request. Send the first ARP NOW! */
+         arpRequestPtr->requestedInterface = interface;
+         arpRequestPtr->requestingInterface = NULL; /* TODO! */
+         
+         LinkSendArpRequest(sr, arpRequestPtr);
+         
+         arpRequestPtr->times_sent = 1;
+         arpRequestPtr->sent = time(NULL);
+      }
    }
 }
 
