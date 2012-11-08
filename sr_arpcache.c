@@ -116,6 +116,7 @@ struct sr_arpreq *sr_arpcache_queuereq(struct sr_arpcache *cache, uint32_t ip, u
       req->ip = ip;
       req->next = cache->requests;
       cache->requests = req;
+      req->times_sent = 0;
    }
    
    /* Add the packet to the list of packets for this request */
