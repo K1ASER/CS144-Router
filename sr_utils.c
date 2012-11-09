@@ -123,21 +123,21 @@ void print_hdr_icmp(uint8_t *buf) {
 void print_hdr_arp(uint8_t *buf) {
   sr_arp_hdr_t *arp_hdr = (sr_arp_hdr_t *)(buf);
   fprintf(stderr, "ARP header\n");
-  fprintf(stderr, "\thardware type: %d\n", ntohs(arp_hdr->HardwareType));
-  fprintf(stderr, "\tprotocol type: %d\n", ntohs(arp_hdr->ProtocolType));
-  fprintf(stderr, "\thardware address length: %d\n", arp_hdr->HardwareAddressLength);
-  fprintf(stderr, "\tprotocol address length: %d\n", arp_hdr->ProtocolAddressLength);
-  fprintf(stderr, "\topcode: %d\n", ntohs(arp_hdr->OperationCode));
+  fprintf(stderr, "\thardware type: %d\n", ntohs(arp_hdr->ar_hrd));
+  fprintf(stderr, "\tprotocol type: %d\n", ntohs(arp_hdr->ar_pro));
+  fprintf(stderr, "\thardware address length: %d\n", arp_hdr->ar_hln);
+  fprintf(stderr, "\tprotocol address length: %d\n", arp_hdr->ar_pln);
+  fprintf(stderr, "\topcode: %d\n", ntohs(arp_hdr->ar_op));
 
   fprintf(stderr, "\tsender hardware address: ");
-  print_addr_eth(arp_hdr->SenderHardwareAddress);
+  print_addr_eth(arp_hdr->ar_sha);
   fprintf(stderr, "\tsender ip address: ");
-  print_addr_ip_int(ntohl(arp_hdr->SenderIpAddress));
+  print_addr_ip_int(ntohl(arp_hdr->ar_sip));
 
   fprintf(stderr, "\ttarget hardware address: ");
-  print_addr_eth(arp_hdr->TargetHardwareAddress);
+  print_addr_eth(arp_hdr->ar_tha);
   fprintf(stderr, "\ttarget ip address: ");
-  print_addr_ip_int(ntohl(arp_hdr->TargetIpAddress));
+  print_addr_ip_int(ntohl(arp_hdr->ar_tip));
 }
 
 /* Prints out all possible headers, starting from Ethernet */

@@ -51,7 +51,11 @@
 
 #define GET_IP_HEADER_LENGTH(pktPtr)      ((((sr_ip_hdr_t*)(pktPtr))->ip_hl) * 4)
 
-#define LOG_MESSAGE(...) fprintf(stderr, __VA_ARGS__)
+#ifdef DONT_DEFINE_UNLESS_DEBUGGING
+# define LOG_MESSAGE(...) fprintf(stderr, __VA_ARGS__)
+#else 
+# define LOG_MESSAGE(...)
+#endif
 
 /*
  *-----------------------------------------------------------------------------
@@ -222,16 +226,17 @@ void LinkSendArpRequest(struct sr_instance* sr, struct sr_arpreq* request)
    ethernetHdr->ether_type = htons(ethertype_arp);
    
    /* ARP Header */
-   arpHdr->HardwareType = htons(arp_hrd_ethernet);
-   arpHdr->ProtocolType = htons(ethertype_ip);
-   arpHdr->HardwareAddressLength = ETHER_ADDR_LEN;
-   arpHdr->ProtocolAddressLength = IP_ADDR_LEN;
-   arpHdr->OperationCode = htons(arp_op_request);
-   memcpy(arpHdr->SenderHardwareAddress, request->requestedInterface->addr, ETHER_ADDR_LEN);
-   arpHdr->SenderIpAddress = request->requestedInterface->ip;
-   memset(arpHdr->TargetHardwareAddress, 0, ETHER_ADDR_LEN); /* Not strictly necessary by RFC 826 */
-   arpHdr->TargetIpAddress = htonl(request->ip);
+   arpHdr->ar_hrd = htons(arp_hrd_ethernet);
+   arpHdr->ar_pro = htons(ethertype_ip);
+   arpHdr->ar_hln = ETHER_ADDR_LEN;
+   arpHdr->ar_pln = IP_ADDR_LEN;
+   arpHdr->ar_op = htons(arp_op_request);
+   memcpy(arpHdr->ar_sha, request->requestedInterface->addr, ETHER_ADDR_LEN);
+   arpHdr->ar_sip = request->requestedInterface->ip;
+   memset(arpHdr->ar_tha, 0, ETHER_ADDR_LEN); /* Not strictly necessary by RFC 826 */
+   arpHdr->ar_tip = htonl(request->ip);
    
+   /* Ship it! */
    sr_send_packet(sr, arpPacket, sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t),
       request->requestedInterface->name);
    
@@ -333,21 +338,21 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
       return;
    }
    
-   if ((ntohs(packet->ProtocolType) != ethertype_ip)
-      || (ntohs(packet->HardwareType) != arp_hrd_ethernet)
-      || (packet->ProtocolAddressLength != IP_ADDR_LEN) 
-      || (packet->HardwareAddressLength != ETHER_ADDR_LEN))
+   if ((ntohs(packet->ar_pro) != ethertype_ip)
+      || (ntohs(packet->ar_hrd) != arp_hrd_ethernet)
+      || (packet->ar_pln != IP_ADDR_LEN) 
+      || (packet->ar_hln != ETHER_ADDR_LEN))
    {
       /* Received unsupported packet argument */
       LOG_MESSAGE("ARP packet received with invalid parameters. Dropping.\n");
       return;
    }
    
-   switch (ntohs(packet->OperationCode))
+   switch (ntohs(packet->ar_op))
    {
       case arp_op_request:
       {
-         if (packet->TargetIpAddress == interface->ip)
+         if (packet->ar_tip == interface->ip)
          {
             /* We're being ARPed! Prepare the reply! */
             uint8_t* replyPacket = (uint8_t *) malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t));
@@ -357,20 +362,20 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
             LOG_MESSAGE("Received ARP request. Sending ARP reply.\n");
             
             /* Ethernet Header */
-            memcpy(ethernetHdr->ether_dhost, packet->SenderHardwareAddress, ETHER_ADDR_LEN);
+            memcpy(ethernetHdr->ether_dhost, packet->ar_sha, ETHER_ADDR_LEN);
             memcpy(ethernetHdr->ether_shost, interface->addr, ETHER_ADDR_LEN);
             ethernetHdr->ether_type = htons(ethertype_arp);
             
             /* ARP Header */
-            arpHdr->HardwareType = htons(arp_hrd_ethernet);
-            arpHdr->ProtocolType = htons(ethertype_ip);
-            arpHdr->HardwareAddressLength = ETHER_ADDR_LEN;
-            arpHdr->ProtocolAddressLength = IP_ADDR_LEN;
-            arpHdr->OperationCode = htons(arp_op_reply);
-            memcpy(arpHdr->SenderHardwareAddress, interface->addr, ETHER_ADDR_LEN);
-            arpHdr->SenderIpAddress = interface->ip;
-            memcpy(arpHdr->TargetHardwareAddress, packet->SenderHardwareAddress, ETHER_ADDR_LEN);
-            arpHdr->TargetIpAddress = packet->SenderIpAddress;
+            arpHdr->ar_hrd = htons(arp_hrd_ethernet);
+            arpHdr->ar_pro = htons(ethertype_ip);
+            arpHdr->ar_hln = ETHER_ADDR_LEN;
+            arpHdr->ar_pln = IP_ADDR_LEN;
+            arpHdr->ar_op = htons(arp_op_reply);
+            memcpy(arpHdr->ar_sha, interface->addr, ETHER_ADDR_LEN);
+            arpHdr->ar_sip = interface->ip;
+            memcpy(arpHdr->ar_tha, packet->ar_sha, ETHER_ADDR_LEN);
+            arpHdr->ar_tip = packet->ar_sip;
             
             sr_send_packet(sr, replyPacket, sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t),
                interface->name);
@@ -385,10 +390,10 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
          /* Note: Due to the point-to-point nature of ARP, we don't have to 
           * check all our interface IP addresses, only the one that the ARP 
           * packet was received on. */
-         if (packet->TargetIpAddress == interface->ip)
+         if (packet->ar_tip == interface->ip)
          {
             struct sr_arpreq* requestPointer = sr_arpcache_insert(
-               &sr->cache, packet->SenderHardwareAddress, ntohl(packet->SenderIpAddress));
+               &sr->cache, packet->ar_sha, ntohl(packet->ar_sip));
             
             if (requestPointer != NULL)
             {
@@ -400,7 +405,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
                   
                   /* Copy in the newly discovered Ethernet address of the frame */
                   memcpy(((sr_ethernet_hdr_t*) curr->buf)->ether_dhost,
-                     packet->SenderHardwareAddress, ETHER_ADDR_LEN);
+                     packet->ar_sha, ETHER_ADDR_LEN);
                   
                   /* The last piece of the pie is now complete. Ship it. */
                   sr_send_packet(sr, curr->buf, curr->len, curr->iface);
@@ -429,7 +434,7 @@ static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t * p
       default:
       {
          /* Unrecognized ARP type */
-         LOG_MESSAGE("Received packet with invalid ARP type: 0x%X.\n", ntohs(packet->OperationCode));
+         LOG_MESSAGE("Received packet with invalid ARP type: 0x%X.\n", ntohs(packet->ar_op));
          break;
       }
    }
@@ -751,7 +756,7 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
    uint32_t nextHopIpAddress = ntohl(sr_get_rt(sr, interface->name)->gw.s_addr);
    struct sr_arpentry* arpEntry = sr_arpcache_lookup(&sr->cache, nextHopIpAddress);
    
-   /* This function is only for ip packets, fill in the type */
+   /* This function is only for IP packets, fill in the type */
    packet->ether_type = htons(ethertype_ip);
    memcpy(packet->ether_shost, interface->addr, ETHER_ADDR_LEN);
    

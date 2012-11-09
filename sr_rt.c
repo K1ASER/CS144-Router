@@ -131,6 +131,13 @@ struct in_addr gw, struct in_addr mask,char* if_name)
 
 } /* -- sr_add_entry -- */
 
+/**
+ * sr_get_rt()\n
+ * @brief Function gets a routing table entry from the interface name.
+ * @param sr pointer to simple router state structure
+ * @param name Name of route to find in the table
+ * @return pointer to routing table entry. NULL if one does not exist.
+ */
 struct sr_rt* sr_get_rt(struct sr_instance* sr, const char* name)
 {
    struct sr_rt* rt_walker = NULL;
