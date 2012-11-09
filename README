@@ -1,0 +1,116 @@
+user: jlenz
+
+Introduction:
+This program implements the static routing requirements of Lab 3 of CS144. All 
+deviations from the requirements as well as design choices that were made will 
+be defined in this file.
+
+High Level Design:
+This section explains the high level design of my software solution.  Some are 
+informative while others point out any quirks of the implementation that might 
+make the code more difficult to understand.
+
+One key feature of my implementation is I did not require changing the 
+sr_instance structure from what was provided.  For this reason, I didn't need 
+to perform any additional initialization in order to route packets.
+
+All functions contain a function comment block header in Doxygen format. It 
+explains which layer of the network stack the function resides, provides a 
+brief explaination, provides explaination of the input parameters, and 
+provides an explaination of the return value.
+
+All functions added to sr_router.c start with the name of the network layer 
+that its functionality is expected to live (namely "link" and "network").  It 
+is also reiterated in the function comment block headers.
+
+All packets are sent in the sr_router.c file to keep the code cleaner.  In 
+order to handle ARP request timeouts which are calculated in the sr_arpqueue.c 
+file, the sr_router file exposes two API functions: LinkSendArpRequest() which 
+sends an ARP packet when a retry is required and 
+NetworkSendTypeThreeIcmpPacket() used when the ARP request retries out.
+
+Functions that malloc() all call free() on that memory before the function 
+returns.  This is to keep the locations of where memory is allocated tightly 
+coupled to where it is returned.  The one exception to this is when packets 
+are queued with the ARP request (which is done by the starter code).  In this 
+case the memory is freed when the ARP reply is received or when the ARP 
+request retries out.  It also means that no other function is expected to free 
+a pointer passed to it.
+
+The IP identify field is implemented like a free running sequence number. When 
+the router has to originate packets it puts this number in the header and 
+increments it allowing it to wrap around.  This really isn't necessary since 
+the router always sets the "don't fragment" bit in the header.
+
+The router's default TTL is 64.  I chose this since it is the default ping TTL 
+in Linux.  This could be changed easily since it is abstracted in a define.
+
+Like in past labs, my endianness strategy is that if a value is in a packet, 
+it MUST be network order and ALL others must be in host format. The only 
+exception to this is the interface stuctures store network address in network 
+format (thank you Piazza for pointing this out!).
+
+Like in past labs, LOG_MESSAGE directives have been used to log to standard 
+error. They are off by default, but can be enabled by defining 
+DONT_DEFINE_UNLESS_DEBUGGING.  There is one that is not turned off, and that 
+is the case in which an ARP request retries out.
+
+Design Limitations:
+This section lays out some of the limitations explicitly.  These were done 
+mostly because they were not explicit in the lab, but assumed.
+- Router supports IPv4 only.
+- Router does not support performing IP fragmentation on packets based on link 
+  MTU.  Nor does it reconstruct packets sent to it's IP address.
+
+API Expansions and Alterations from Starter Code:
+I attempted to keep all files except sr_router.c/.h and sr_arpcache.c as 
+unaltered as possible to keep grading easier. Places I had to differ are 
+explained below.
+sr_rt.c/sr_rt.h
+- Added function sr_get_rt() that gets a routing table entry by the interface 
+  name, same as sr_get_interface() in sr_if.h
+sr_router.h
+- Renamed "template" field in sr_instance to "template_name." This was causing 
+  the C++ compiler (my testing framework is written in C++ and was sharing the 
+  interface) to have issues since tempate is a reserved keyword in the 
+  language. This caused changes in other files that referenced this field.
+sr_protocol.h
+- Added Type and Code enumberations for ICMP messages.
+- Added define for IP address length.
+sr_arpcache.h
+- Added pointer to the interface being ARPed in the ARP request structure.
+sr_arpcache.c
+- Intialized times_sent in sr_arpcache_queuereq() to 0 if the request was new 
+  (didn't already exist in the queue). I did this so that I could use it as a 
+  queue to send the first arp request right away.  Look for a Note to Grader 
+  comment explaining this in the code.
+
+Miscellanious Notes:
+These contain not notes about my implementation, but my opinion on the Lab in 
+general.  Hopefully these suggestions will help the next CS 144 class.
+
+In attempting to keep the starter code as unaltered as possible, I ran into 
+style concerns about the naming of the starter code. While "converntion" is a 
+strong modivator to keep parameter names one way over another, readability 
+should be more important. For example, the default parameter names for ARP 
+packet headers are done the way they are so they match the ARP RFC.  However,
+how am I supposed to remember what ar_pln is supposed to mean unless I've 
+memorized the RFC? Making these parameters into English, like 
+ProtocolAddressLength, is much easier to understand. This ambiguous naming was 
+the cause of many of my bugs because I was checking the incorrect field in the 
+packet header. 
+
+Doxygen is a great tool.  I use it professionally, hense my use of it in this 
+lab.  When you provide a group of people with a large code base that they are 
+expected to understand, it may be useful to do the same and host the output on 
+the CS 144 website for students to browse.
+
+I heard from past classes had to run their code through some network simulator 
+Stanford had on campus. Based on what I heard from them (granted I have a 
+sample size of 1), it seems he EC2 setup is far superior for a few reasons.  
+One of the big ones was being able to debug on a local machine allowing us to 
+keep our full development enviornment (which was great for me since I'm 
+remote!). I was overwhelmed at first looking at the hoops I had to jump 
+through to get it setup, but I found it fairly painless so long as I followed 
+the instructions.  Now all we have to do is fix the traceroute/ping thing so 
+we can ping the router from the internet...
