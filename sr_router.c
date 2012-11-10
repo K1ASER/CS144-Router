@@ -764,6 +764,9 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
    {
       memcpy(packet->ether_dhost, arpEntry->mac, ETHER_ADDR_LEN);
       sr_send_packet(sr, (uint8_t*) packet, length, interface->name);
+      
+      /* Lookup made a copy, so we must free it to prevent leaks. */
+      free(arpEntry);
    }
    else
    {
