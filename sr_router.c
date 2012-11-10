@@ -689,6 +689,8 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    
       linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*)forwardPacket,
          length + sizeof(sr_ethernet_hdr_t), forwardInterface);
+      
+      free(forwardPacket);
    }
    else
    {
