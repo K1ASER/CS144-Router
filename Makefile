@@ -45,7 +45,7 @@ INCLUDE_DIRS = .
 
 # Add any source files you've added here
 SRCS = sr_router.c sr_main.c sr_if.c sr_rt.c sr_vns_comm.c sr_utils.c sr_dumper.c \
-	sr_arpcache.c sha1.c
+	sr_arpcache.c sha1.c sr_nat.c
 
 # Directory for object and dependancy files (executables will be built in the 
 # same folder as the client source)
