@@ -51,6 +51,7 @@
 
 #define GET_IP_HEADER_LENGTH(pktPtr)      ((((sr_ip_hdr_t*)(pktPtr))->ip_hl) * 4)
 
+#define DONT_DEFINE_UNLESS_DEBUGGING
 #ifdef DONT_DEFINE_UNLESS_DEBUGGING
 # define LOG_MESSAGE(...) fprintf(stderr, __VA_ARGS__)
 #else 
@@ -697,8 +698,8 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       /* Routing table told us to route this packet back the way it came. 
        * That's probably wrong, so we assume the host is actually 
        * unreachable. */
-      LOG_MESSAGE("Routing decision could not be made. Sending ICMP Host unreachable.\n");
-      NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_host_unreachable, packet);
+      LOG_MESSAGE("Routing decision could not be made. Sending ICMP network unreachable.\n");
+      NetworkSendTypeThreeIcmpPacket(sr, icmp_code_network_unreachable, packet);
    }
 }
 
