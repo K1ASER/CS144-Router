@@ -785,7 +785,7 @@ static void linkArpAndSendPacket(sr_instance_t *sr, sr_ethernet_hdr_t* packet,
    
    /* This function is only for IP packets, fill in the type */
    packet->ether_type = htons(ethertype_ip);
-   memcpy(packet->ether_shost, sr_get_interface(sr, route->interface), ETHER_ADDR_LEN);
+   memcpy(packet->ether_shost, sr_get_interface(sr, route->interface)->addr, ETHER_ADDR_LEN);
    
    if (arpEntry != NULL)
    {
