@@ -46,11 +46,9 @@
  *-----------------------------------------------------------------------------
  */
 
-#define GET_ETHERNET_PACKET_TYPE(pktPtr)  (ntohs(((sr_ethernet_hdr_t*)pktPtr)->ether_type))
 #define GET_ETHERNET_DEST_ADDR(pktPtr)    (((sr_ethernet_hdr_t*)pktPtr)->ether_dhost)
 
-#define GET_IP_HEADER_LENGTH(pktPtr)      ((((sr_ip_hdr_t*)(pktPtr))->ip_hl) * 4)
-
+#define DONT_DEFINE_UNLESS_DEBUGGING
 #ifdef DONT_DEFINE_UNLESS_DEBUGGING
 # define LOG_MESSAGE(...) fprintf(stderr, __VA_ARGS__)
 #else 
@@ -76,24 +74,37 @@ static const uint8_t broadcastEthernetAddress[ETHER_ADDR_LEN] =
 
 /*
  *-----------------------------------------------------------------------------
+ * Static Function Declarations & Definitions
+ *-----------------------------------------------------------------------------
+ */
+
+static inline uint8_t getIpHeaderLength(sr_ip_hdr_t const * const pktPtr)
+{
+   return (pktPtr->ip_hl) * 4;
+}
+
+/*
+ *-----------------------------------------------------------------------------
  * Private Function Declarations
  *-----------------------------------------------------------------------------
  */
 
 static void linkHandleReceivedArpPacket(struct sr_instance* sr, sr_arp_hdr_t* packet,
-   unsigned int length, const struct sr_if* const interface);
+   unsigned int length, sr_if_t const * const interface);
 static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* packet,
-   unsigned int length, const struct sr_if* const interface);
+   unsigned int length, sr_rt_t const * const route);
 static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
-   unsigned int length, const struct sr_if* const interface);
+   unsigned int length, sr_if_t const * const interface);
 static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
-   unsigned int length, const struct sr_if* const interface);
+   unsigned int length, sr_if_t const * const interface);
+static void networkSendIcmpEchoReply(struct sr_instance* sr, sr_ip_hdr_t* echoRequestPacket,
+   unsigned int length);
 static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, unsigned int length,
    const struct sr_if* const receivedInterface);
-static bool networkIpDesinationIsUs(struct sr_instance* sr, const sr_ip_hdr_t* const packet);
-static bool networkIpSourceIsUs(struct sr_instance* sr, const sr_ip_hdr_t* const packet);
+static bool networkIpDesinationIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
+static bool networkIpSourceIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
 static int networkGetMaskLength(uint32_t mask);
-static struct sr_rt* networkGetPacketRoute(struct sr_instance* sr, const sr_ip_hdr_t * const packet);
+static struct sr_rt* networkGetPacketRoute(struct sr_instance* sr, in_addr_t destIp);
 
 /*
  *-----------------------------------------------------------------------------
@@ -126,7 +137,7 @@ void sr_init(struct sr_instance* sr)
    pthread_create(&thread, &(sr->attr), sr_arpcache_timeout, sr);
    
    /* Add initialization code here! */
-   /* Note to grader: No need! */
+   
 
 } /* -- sr_init -- */
 
@@ -291,14 +302,14 @@ void NetworkSendTypeThreeIcmpPacket(struct sr_instance* sr, sr_icmp_code_t icmpC
    
    /* PAUSE. We need to get the destination interface. API has enough 
     * information to get it now. */
-   icmpRoute = networkGetPacketRoute(sr, replyIpHeader);
+   icmpRoute = networkGetPacketRoute(sr, ntohl(replyIpHeader->ip_dst));
    assert(icmpRoute);
    destinationInterface = sr_get_interface(sr, icmpRoute->interface);
    assert(destinationInterface);
    
    /* Okay, RESUME. */
    replyIpHeader->ip_src = destinationInterface->ip;
-   replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
+   replyIpHeader->ip_sum = cksum(replyIpHeader, getIpHeaderLength(replyIpHeader));
    
    /* Fill in ICMP fields. */
    replyIcmpHeader->icmp_type = icmp_type_desination_unreachable;
@@ -309,7 +320,7 @@ void NetworkSendTypeThreeIcmpPacket(struct sr_instance* sr, sr_icmp_code_t icmpC
    
    linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket,
       sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t),
-      destinationInterface);
+      networkGetPacketRoute(sr, ntohl(replyIpHeader->ip_dst)));
    
    free(replyPacket);
 }
@@ -475,7 +486,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
       uint16_t calculatedChecksum = 0;
       packet->ip_sum = 0;
       
-      calculatedChecksum = cksum(packet, GET_IP_HEADER_LENGTH(packet));
+      calculatedChecksum = cksum(packet, getIpHeaderLength(packet));
       
       if (headerChecksum != calculatedChecksum)
       {
@@ -551,7 +562,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
          replyIpHeader->ip_sum = 0;
          replyIpHeader->ip_src = interface->ip;
          replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
-         replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
+         replyIpHeader->ip_sum = cksum(replyIpHeader, getIpHeaderLength(replyIpHeader));
          
          /* Fill in ICMP fields. */
          replyIcmpHeader->icmp_type = icmp_type_time_exceeded;
@@ -561,7 +572,8 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
          replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, sizeof(sr_icmp_t3_hdr_t));
          
          linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket,
-            sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t), interface);
+            sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t),
+            networkGetPacketRoute(sr, ntohl(packet->ip_src)));
          
          free(replyPacket);
       }
@@ -569,7 +581,7 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
       {
          /* Recalculate checksum since we altered the packet header. */
          packet->ip_sum = 0;
-         packet->ip_sum = cksum(packet, GET_IP_HEADER_LENGTH(packet));
+         packet->ip_sum = cksum(packet, getIpHeaderLength(packet));
          
          networkForwardIpPacket(sr, packet, length, interface);
       }
@@ -588,8 +600,8 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
 static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, const struct sr_if* const interface)
 {
-   sr_icmp_hdr_t* icmpHeader = (sr_icmp_hdr_t*) (((uint8_t*) packet) + GET_IP_HEADER_LENGTH(packet));
-   int icmpLength = length - GET_IP_HEADER_LENGTH(packet);
+   sr_icmp_hdr_t* icmpHeader = (sr_icmp_hdr_t*) (((uint8_t*) packet) + getIpHeaderLength(packet));
+   int icmpLength = length - getIpHeaderLength(packet);
    
    /* Check the integrity of the ICMP packet */
    {
@@ -610,45 +622,7 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    if (icmpHeader->icmp_type == icmp_type_echo_request)
    {
       /* Send an echo Reply! */
-      uint8_t* replyPacket = malloc(icmpLength + sizeof(sr_ip_hdr_t) + sizeof(sr_ethernet_hdr_t));
-      sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
-      sr_icmp_hdr_t* replyIcmpHeader = (sr_icmp_hdr_t*) ((uint8_t*) replyIpHeader
-         + sizeof(sr_ip_hdr_t));
-      assert(replyPacket);
-      
-      LOG_MESSAGE("Received ICMP echo request packet. Sending ICMP echo reply.\n");
-      
-      /* Fill in IP Header fields. */
-      replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
-      replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
-      replyIpHeader->ip_tos = 0;
-      replyIpHeader->ip_len = htons((uint16_t) length);
-      replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-      replyIpHeader->ip_off = htons(IP_DF);
-      replyIpHeader->ip_ttl = DEFAULT_TTL;
-      replyIpHeader->ip_p = ip_protocol_icmp;
-      replyIpHeader->ip_sum = 0;
-      replyIpHeader->ip_src = packet->ip_dst; /* Already in network byte order. */
-      replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
-      replyIpHeader->ip_sum = cksum(replyIpHeader, GET_IP_HEADER_LENGTH(replyIpHeader));
-      
-      /* Fill in ICMP fields. */
-      replyIcmpHeader->icmp_type = icmp_type_echo_reply;
-      replyIcmpHeader->icmp_code = 0;
-      replyIcmpHeader->icmp_sum = 0;
-      
-      /* Copy the old payload into the new one... */
-      memcpy(((uint8_t*) replyIcmpHeader) + sizeof(sr_icmp_hdr_t),
-         ((uint8_t*) icmpHeader) + sizeof(sr_icmp_hdr_t), icmpLength - sizeof(sr_icmp_hdr_t));
-      
-      /* ...then update the final checksum for the ICMP payload. */
-      replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, icmpLength);
-      
-      /* Reply payload built. Ship it! */
-      linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket, length + sizeof(sr_ethernet_hdr_t),
-         interface);
-      
-      free(replyPacket);
+      networkSendIcmpEchoReply(sr, packet, length);
    }
    else
    {
@@ -656,6 +630,53 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       LOG_MESSAGE("Received unexpected ICMP message. Type: %u, Code: %u\n", 
          icmpHeader->icmp_type, icmpHeader->icmp_code);
    }
+}
+
+static void networkSendIcmpEchoReply(struct sr_instance* sr, sr_ip_hdr_t* echoRequestPacket,
+   unsigned int length)
+{
+   int icmpLength = length - getIpHeaderLength(echoRequestPacket);
+   uint8_t* replyPacket = malloc(icmpLength + sizeof(sr_ip_hdr_t) + sizeof(sr_ethernet_hdr_t));
+   sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
+   sr_icmp_hdr_t* replyIcmpHeader =
+      (sr_icmp_hdr_t*) ((uint8_t*) replyIpHeader + sizeof(sr_ip_hdr_t));
+   assert(replyPacket);
+   
+   LOG_MESSAGE("Received ICMP echo request packet. Sending ICMP echo reply.\n");
+   
+   /* Fill in IP Header fields. */
+   replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
+   replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
+   replyIpHeader->ip_tos = 0;
+   replyIpHeader->ip_len = htons((uint16_t) length);
+   replyIpHeader->ip_id = htons(ipIdentifyNumber);
+   ipIdentifyNumber++;
+   replyIpHeader->ip_off = htons(IP_DF);
+   replyIpHeader->ip_ttl = DEFAULT_TTL;
+   replyIpHeader->ip_p = ip_protocol_icmp;
+   replyIpHeader->ip_sum = 0;
+   replyIpHeader->ip_src = echoRequestPacket->ip_dst; /* Already in network byte order. */
+   replyIpHeader->ip_dst = echoRequestPacket->ip_src; /* Already in network byte order. */
+   replyIpHeader->ip_sum = cksum(replyIpHeader, getIpHeaderLength(replyIpHeader));
+   
+   /* Fill in ICMP fields. */
+   replyIcmpHeader->icmp_type = icmp_type_echo_reply;
+   replyIcmpHeader->icmp_code = 0;
+   replyIcmpHeader->icmp_sum = 0;
+   
+   /* Copy the old payload into the new one... */
+   memcpy(((uint8_t*) replyIcmpHeader) + sizeof(sr_icmp_hdr_t),
+      ((uint8_t*) echoRequestPacket) + getIpHeaderLength(echoRequestPacket) + sizeof(sr_icmp_hdr_t), 
+      icmpLength - sizeof(sr_icmp_hdr_t));
+   
+   /* ...then update the final checksum for the ICMP payload. */
+   replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, icmpLength);
+   
+   /* Reply payload built. Ship it! */
+   linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket, length + sizeof(sr_ethernet_hdr_t),
+      networkGetPacketRoute(sr, ntohl(echoRequestPacket->ip_src)));
+   
+   free(replyPacket);
 }
 
 /**
@@ -671,7 +692,7 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, const struct sr_if* const receivedInterface)
 {
    /* Get the route we should take for the provided packet. */
-   struct sr_rt* forwardRoute = networkGetPacketRoute(sr, packet);
+   struct sr_rt* forwardRoute = networkGetPacketRoute(sr, ntohl(packet->ip_dst));
    
    /* Check to make sure we made a viable routing decision. If we made the 
     * decision to forward onto the interface we received the packet or 
@@ -680,15 +701,14 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    if ((forwardRoute != NULL) && (strcmp(forwardRoute->interface, receivedInterface->name) != 0))
    {
       /* We found a viable route. Forward to it! */
-      struct sr_if* forwardInterface = sr_get_interface(sr, forwardRoute->interface);
       uint8_t* forwardPacket = malloc(length + sizeof(sr_ethernet_hdr_t));
       memcpy(forwardPacket + sizeof(sr_ethernet_hdr_t), packet, length);
       
       LOG_MESSAGE("Forwarding from interface %s to %s\n", receivedInterface->name, 
-         forwardInterface->name);
+         forwardRoute->interface);
    
       linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*)forwardPacket,
-         length + sizeof(sr_ethernet_hdr_t), forwardInterface);
+         length + sizeof(sr_ethernet_hdr_t), forwardRoute);
       
       free(forwardPacket);
    }
@@ -697,20 +717,20 @@ static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
       /* Routing table told us to route this packet back the way it came. 
        * That's probably wrong, so we assume the host is actually 
        * unreachable. */
-      LOG_MESSAGE("Routing decision could not be made. Sending ICMP Host unreachable.\n");
-      NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_host_unreachable, packet);
+      LOG_MESSAGE("Routing decision could not be made. Sending ICMP network unreachable.\n");
+      NetworkSendTypeThreeIcmpPacket(sr, icmp_code_network_unreachable, packet);
    }
 }
 
 /**
  * networkGetPacketRoute()\n
  * IP Stack Level: Network (IP)\n
- * @brief Function gets the longest prefix match route for a provided IP packet.
+ * @brief Function gets the longest prefix match route for a provided destination IP address.
  * @param sr pointer to simple router structure.
- * @param packet pointer to packet in need of routing.
+ * @param destIp destination IP address.
  * @return pointer to the routing table entry where we should route the packet.
  */
-static struct sr_rt* networkGetPacketRoute(struct sr_instance* sr, const sr_ip_hdr_t * const packet)
+static struct sr_rt* networkGetPacketRoute(struct sr_instance* sr, in_addr_t destIp)
 {
    struct sr_rt* routeIter;
    int networkMaskLength = -1;
@@ -723,7 +743,7 @@ static struct sr_rt* networkGetPacketRoute(struct sr_instance* sr, const sr_ip_h
       if (networkGetMaskLength(routeIter->mask.s_addr) > networkMaskLength)
       {
          /* Mask is longer, now see if the destination matches. */
-         if ((ntohl(packet->ip_dst) & routeIter->mask.s_addr) 
+         if ((destIp & routeIter->mask.s_addr) 
             == (ntohl(routeIter->dest.s_addr) & routeIter->mask.s_addr))
          {
             /* Longer prefix match found. */
@@ -751,21 +771,26 @@ static struct sr_rt* networkGetPacketRoute(struct sr_instance* sr, const sr_ip_h
  * @param interface pointer to interface to send packet on.
  * @warning Function is for IP datagrams only. ARP packets should not go through this function.
  */
-static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* packet, 
-   unsigned int length, const struct sr_if* const interface)
+static void linkArpAndSendPacket(sr_instance_t *sr, sr_ethernet_hdr_t* packet, 
+   unsigned int length, sr_rt_t const * const route)
 {
+   uint32_t nextHopIpAddress;
+   sr_arpentry_t *arpEntry;
+   
+   assert(route);
+   
    /* Need the gateway IP to do the ARP cache lookup. */
-   uint32_t nextHopIpAddress = ntohl(sr_get_rt(sr, interface->name)->gw.s_addr);
-   struct sr_arpentry* arpEntry = sr_arpcache_lookup(&sr->cache, nextHopIpAddress);
+   nextHopIpAddress = ntohl(route->gw.s_addr);
+   arpEntry = sr_arpcache_lookup(&sr->cache, nextHopIpAddress);
    
    /* This function is only for IP packets, fill in the type */
    packet->ether_type = htons(ethertype_ip);
-   memcpy(packet->ether_shost, interface->addr, ETHER_ADDR_LEN);
+   memcpy(packet->ether_shost, sr_get_interface(sr, route->interface)->addr, ETHER_ADDR_LEN);
    
    if (arpEntry != NULL)
    {
       memcpy(packet->ether_dhost, arpEntry->mac, ETHER_ADDR_LEN);
-      sr_send_packet(sr, (uint8_t*) packet, length, interface->name);
+      sr_send_packet(sr, (uint8_t*) packet, length, route->interface);
       
       /* Lookup made a copy, so we must free it to prevent leaks. */
       free(arpEntry);
@@ -774,12 +799,12 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
    {
       /* We need to ARP our next hop. Setup the request and send the ARP packet. */
       struct sr_arpreq* arpRequestPtr = sr_arpcache_queuereq(&sr->cache, nextHopIpAddress,
-         (uint8_t*) packet, length, interface->name);
+         (uint8_t*) packet, length, route->interface);
       
       if (arpRequestPtr->times_sent == 0)
       {
          /* New request. Send the first ARP NOW! */
-         arpRequestPtr->requestedInterface = interface;
+         arpRequestPtr->requestedInterface = sr_get_interface(sr, route->interface);
          
          LinkSendArpRequest(sr, arpRequestPtr);
          

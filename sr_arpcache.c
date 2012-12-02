@@ -27,7 +27,7 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr)
    for (requestIterator = sr->cache.requests; requestIterator != NULL; requestIterator =
       requestIterator->next)
    {
-      if (requestIterator->times_sent <= MAX_NUM_ARP_TRANSMISSIONS)
+      if (requestIterator->times_sent < MAX_NUM_ARP_TRANSMISSIONS)
       {
          /* Try, try again. */
          LinkSendArpRequest(sr, requestIterator);
@@ -46,10 +46,8 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr)
             NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_host_unreachable,
                (sr_ip_hdr_t*) (packetIterator->buf + sizeof(sr_ethernet_hdr_t)));
             
-            /* Free all memory associated with this packet (allocated on queue). */
-            free(packetIterator->buf);
-            free(packetIterator->iface);
-            free(packetIterator);
+            /* We do not have to free all memory associated with this packet. 
+             * arpreq_destroy will do this for us. */
          }
          
          /* Bye bye ARP request. */

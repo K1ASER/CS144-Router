@@ -41,7 +41,7 @@ struct sr_rt;
  *
  * -------------------------------------------------------------------------- */
 
-struct sr_instance
+typedef struct sr_instance
 {
    int sockfd; /* socket to server */
    char user[32]; /* user name */
@@ -54,7 +54,7 @@ struct sr_instance
    struct sr_arpcache cache; /* ARP cache */
    pthread_attr_t attr;
    FILE* logfile;
-};
+} sr_instance_t;
 
 /* -- sr_main.c -- */
 int sr_verify_routing_table(struct sr_instance* sr);

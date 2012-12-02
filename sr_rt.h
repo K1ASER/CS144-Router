@@ -27,20 +27,19 @@
  *
  * -------------------------------------------------------------------------- */
 
-struct sr_rt
+typedef struct sr_rt
 {
     struct in_addr dest;
     struct in_addr gw;
     struct in_addr mask;
     char   interface[sr_IFACE_NAMELEN];
     struct sr_rt* next;
-};
+} sr_rt_t;
 
 
 int sr_load_rt(struct sr_instance*,const char*);
 void sr_add_rt_entry(struct sr_instance*, struct in_addr,struct in_addr,
                   struct in_addr, char*);
-struct sr_rt* sr_get_rt(struct sr_instance* sr, const char* name);
 void sr_print_routing_table(struct sr_instance* sr);
 void sr_print_routing_entry(struct sr_rt* entry);
 
