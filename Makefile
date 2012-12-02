@@ -15,7 +15,7 @@ CC = gcc
 
 OSTYPE = $(shell uname)
 
-ifeq ($(OSTYPE),CYGWIN_NT-5.1)
+ifneq (,$(filter CYGWIN_NT%,$(OSTYPE)))
 ARCH = -D_CYGWIN_
 endif
 
@@ -52,9 +52,7 @@ SRCS = sr_router.c sr_main.c sr_if.c sr_rt.c sr_vns_comm.c sr_utils.c sr_dumper.
 OBJS_DIR = bin
 
 # Helper Functions
-get_src_from_dir = $(wildcard $1/*.cpp) $(wildcard $1/*.c)
 get_dirs_from_dirspec = $(wildcard $1)
-get_src_from_dir_list = $(foreach dir, $1, $(call get_src_from_dir,$(dir)))
 __src_to = $(subst .c,$1, $(subst .cpp,$1,$2))
 src_to = $(addprefix $(OBJS_DIR)/,$(call __src_to,$1,$2))
 src_to_o = $(call src_to,.o,$1)
@@ -68,16 +66,10 @@ DEP = $(call src_to_d, $(SRCS))
 
 STUFF_TO_CLEAN = sr $(OBJS) $(DEP)
 
-$(OBJS_DIR)/%.o: %.cpp
-	@echo Compiling $(notdir $<)
-	$(SILENCE)mkdir -p $(dir $@)
-	$(SILENCE)$(COMPILE.cpp) $(INCLUDES) -MMD -MP $(OUTPUT_OPTION) $<
-
-# Not that we should have any C sources, just covering my bases.
 $(OBJS_DIR)/%.o: %.c
 	@echo Compiling $(notdir $<)
 	$(SILENCE)mkdir -p $(dir $@)
-	$(SILENCE)$(COMPILE.c) -c $(INCLUDES) -MMD -MP $(OUTPUT_OPTION) $<
+	$(SILENCE)$(CC) $(CFLAGS) -c $(INCLUDES) -MMD -MP $(OUTPUT_OPTION) $<
 
 ifneq "$(MAKECMDGOALS)" "clean"
 -include $(DEP)
@@ -99,7 +91,7 @@ clean:
 	@echo Cleaning Project
 	$(SILENCE)$(RM) $(STUFF_TO_CLEAN)
 	$(SILENCE)$(RM) -r $(OBJS_DIR)
-	$(SILENCE)$(RM) *.tar tags
+	$(SILENCE)$(RM) *.tar.gz tags
 #	$(SILENCE)make -f TestSpecificCode/build/TestingMakefile.mk clean
 
 dist-clean: clean
@@ -125,4 +117,7 @@ debug:
 	@$(call debug_print_list,$(STUFF_TO_CLEAN))
 	@echo Includes:
 	@$(call debug_print_list,$(INCLUDES))
+	@echo Compile Flags:
+	@$(call debug_print_list,$(CFLAGS))
+	
 
