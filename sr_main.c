@@ -112,8 +112,11 @@ extern char* __attribute__((dllimport)) optarg;
 extern char* optarg;
 #endif
 
-/*-----------------------------------------------------------------------------
- *---------------------------------------------------------------------------*/
+/*
+ *-----------------------------------------------------------------------------
+ * Private Function Declarations
+ *-----------------------------------------------------------------------------
+ */
 
 static void usage(char*);
 static void sr_init_instance(struct sr_instance*);
@@ -121,8 +124,11 @@ static void sr_destroy_instance(struct sr_instance*);
 static void sr_set_user(struct sr_instance*);
 static void sr_load_rt_wrap(struct sr_instance* sr, char* rtable);
 
-/*-----------------------------------------------------------------------------
- *---------------------------------------------------------------------------*/
+/*
+ *-----------------------------------------------------------------------------
+ * Public Function Definitions
+ *-----------------------------------------------------------------------------
+ */
 
 int main(int argc, char **argv)
 {
@@ -241,7 +247,23 @@ int main(int argc, char **argv)
    {  
       /* Read from specified routing table */
       sr_load_rt_wrap(&sr, cmdArgs.rtable);
-   }  
+   }
+   
+   if (cmdArgs.natEnabled)
+   {
+      sr.nat = malloc(sizeof(sr_nat_t));
+      assert(sr.nat);
+      
+      sr_nat_init(sr.nat);
+      
+      sr.nat->icmpTimeout = cmdArgs.icmpQueryTimeout;
+      sr.nat->tcpEstablishedTimeout = cmdArgs.tcpEstablishedTimeout;
+      sr.nat->tcpTransitoryTimeout = cmdArgs.tcpTransitioryTimeout;
+   }
+   else
+   {
+      sr.nat = NULL;
+   }
 
    /* call router init (for arp subsystem etc.) */
    sr_init(&sr);
@@ -255,6 +277,12 @@ int main(int argc, char **argv)
    
    return 0;
 }/* -- main -- */
+
+/*
+ *-----------------------------------------------------------------------------
+ * Private Function Definitions
+ *-----------------------------------------------------------------------------
+ */
 
 /*-----------------------------------------------------------------------------
  * Method: usage(..)
@@ -338,6 +366,7 @@ static void sr_init_instance(struct sr_instance* sr)
    sr->if_list = 0;
    sr->routing_table = 0;
    sr->logfile = 0;
+   sr->nat = NULL;
 } /* -- sr_init_instance -- */
 
 /*-----------------------------------------------------------------------------

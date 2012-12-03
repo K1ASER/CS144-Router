@@ -100,7 +100,18 @@ struct sr_icmp_t3_hdr {
 } __attribute__ ((packed)) ;
 typedef struct sr_icmp_t3_hdr sr_icmp_t3_hdr_t;
 
-
+/**
+ * @brief Structure of Type 0 (Echo reply) and Type 8 (Echo request) ICMP packets. 
+ */
+typedef struct __attribute__((packed))
+{  
+   uint8_t icmp_type; /**< ICMP Type @see sr_icmp_type */
+   uint8_t icmp_code; /**< ICMP Code (should be 0 for these) */
+   uint16_t icmp_sum; /**< ICMP checksum (covers entire payload) */
+   uint16_t ident; /**< Echo request/reply identification number */
+   uint16_t seq_num; /**< Echo request/reply sequence number */
+   uint8_t data[1]; /**< Variable length data sent with request/reply */
+} sr_icmp_t0_hdr_t, sr_icmp_t8_hdr_t;
 
 
 /*
@@ -116,7 +127,7 @@ struct sr_ip_hdr
     unsigned int ip_v:4;		/* version */
     unsigned int ip_hl:4;		/* header length */
 #else
-#error "Byte ordering ot specified " 
+#error "Byte ordering not specified " 
 #endif 
     uint8_t ip_tos;			/* type of service */
     uint16_t ip_len;			/* total length */
@@ -148,10 +159,14 @@ struct sr_ethernet_hdr
 } __attribute__ ((packed)) ;
 typedef struct sr_ethernet_hdr sr_ethernet_hdr_t;
 
-
-
+/** 
+ * @brief IP protocol header values as defined by IANA 
+ * @see http://www.iana.org/assignments/protocol-numbers/protocol-numbers.xml
+ */
 enum sr_ip_protocol {
-  ip_protocol_icmp = 0x0001,
+  ip_protocol_icmp = 1,
+  ip_protocol_tcp = 6,
+  ip_protocol_udp = 17
 };
 
 enum sr_ethertype {
@@ -198,6 +213,49 @@ struct sr_arp_hdr
    uint32_t ar_tip; /* target IP address            */
 } __attribute__ ((packed)) ;
 typedef struct sr_arp_hdr sr_arp_hdr_t;
+
+#define TCP_OFFSET_M (0xF000)
+/** @brief Urgent Pointer field significant */
+#define TCP_URG_M    (0x0020)
+/** @brief Acknowledgment field significant */
+#define TCP_ACK_M    (0x0010)
+/** @brief Push Function */
+#define TCP_PSH_M    (0x0008)
+/** @brief Reset the connection */
+#define TCP_RST_M    (0x0004)
+/** @brief Synchronize sequence numbers */
+#define TCP_SYN_M    (0x0002)
+/** @brief No more data from sender */
+#define TCP_FIN_M    (0x0001)
+
+/**
+ * @brief Header structure for a transmission control protocol (TCP) packet header.
+ * @note controlBits field should not be accessed directly, but used with associated bit masks.
+ * @see http://tools.ietf.org/html/rfc793#section-3.1
+ */
+typedef struct __attribute__((packed))
+{
+   uint16_t sourcePort; /**< The source port number. */
+   uint16_t destinationPort; /**< The destination port number. */
+   uint32_t sequenceNumber; /**< The sequence number of the first data octet in this segment (except when SYN is present) */
+   uint32_t acknowledgmentNumber; /**< Field contains the value of the next sequence number the sender of the segment is expecting to receive */
+   uint16_t offset_controlBits;
+   uint16_t window; /**< The number of data octets beginning with the one indicated in the acknowledgment field which the sender of this segment is willing to accept. */
+   uint16_t checksum;
+   uint16_t urgentPointer; /**< current value of the urgent pointer as a positive offset from the sequence number in this segment. */
+} sr_tcp_hdr_t;
+
+/**
+ * @brief Header structure for a user datagram protocol (UDP) packet header.
+ * @see http://tools.ietf.org/html/rfc768
+ */
+typedef struct __attribute__((packed))
+{
+   uint16_t sourcePort;
+   uint16_t destinationPort;
+   uint16_t length;
+   uint16_t checksum;
+} sr_udp_hdr_t;
 
 #define sr_IFACE_NAMELEN 32
 
