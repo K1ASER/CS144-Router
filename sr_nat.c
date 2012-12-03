@@ -166,7 +166,7 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    
    if (type == nat_mapping_icmp)
    {
-      LOG_MESSAGE("Creating ICMP mapping from %u.%u.%u.%u:%u to %u", (ip_int >> 24) & 0xFF, 
+      LOG_MESSAGE("Creating ICMP mapping from %u.%u.%u.%u:%u to %u\n", (ip_int >> 24) & 0xFF, 
          (ip_int >> 16) & 0xFF, (ip_int >> 8) & 0xFF, ip_int & 0xFF, aux_int, nat->nextIcmpIdentNumber);
       mapping->aux_ext = nat->nextIcmpIdentNumber;
       if (++nat->nextIcmpIdentNumber > LAST_PORT_NUMBER)
@@ -180,7 +180,7 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    }
    else if (type == nat_mapping_tcp)
    {
-      LOG_MESSAGE("Creating TCP mapping from %u.%u.%u.%u:%u to %u", (ip_int >> 24) & 0xFF, 
+      LOG_MESSAGE("Creating TCP mapping from %u.%u.%u.%u:%u to %u\n", (ip_int >> 24) & 0xFF, 
          (ip_int >> 16) & 0xFF, (ip_int >> 8) & 0xFF, ip_int & 0xFF, aux_int, nat->nextTcpPortNumber);
       mapping->aux_ext = nat->nextTcpPortNumber;
       if (++nat->nextTcpPortNumber > LAST_PORT_NUMBER)

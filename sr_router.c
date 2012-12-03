@@ -803,7 +803,7 @@ static void natHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packe
                forwardRoute->interface);
             
             /* Use the original packet as a baseline. */
-            memcpy(rewrittenPacket, packet, length);
+            memcpy(rewrittenIpHeader, packet, length);
             
             /* Handle ICMP identify remap and validate. */
             rewrittenIcmpHeader->ident = htons(natLookupResult->aux_ext);
