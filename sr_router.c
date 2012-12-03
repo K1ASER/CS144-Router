@@ -48,7 +48,6 @@
 
 #define GET_ETHERNET_DEST_ADDR(pktPtr)    (((sr_ethernet_hdr_t*)pktPtr)->ether_dhost)
 
-#define DONT_DEFINE_UNLESS_DEBUGGING
 #ifdef DONT_DEFINE_UNLESS_DEBUGGING
 # define LOG_MESSAGE(...) fprintf(stderr, __VA_ARGS__)
 #else 
@@ -72,15 +71,52 @@ static uint16_t ipIdentifyNumber = 0;
 static const uint8_t broadcastEthernetAddress[ETHER_ADDR_LEN] =
    { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
+static const char internalInterfaceName[] = "eth1";
+
 /*
  *-----------------------------------------------------------------------------
- * Static Function Declarations & Definitions
+ * Inline Function Declarations & Definitions
  *-----------------------------------------------------------------------------
  */
 
-static inline uint8_t getIpHeaderLength(sr_ip_hdr_t const * const pktPtr)
+/**
+ * getInternalInterface()\n
+ * IP Stack Level: Network Layer (IP)\n
+ * @brief Gets the length (in bytes) of an IP datagram.
+ * @param pktPtr pointer packet IP header.
+ * @return size of datagram (in bytes).
+ */
+static inline uint16_t getIpHeaderLength(sr_ip_hdr_t const * const pktPtr)
 {
    return (pktPtr->ip_hl) * 4;
+}
+
+/**
+ * getInternalInterface()\n
+ * Description:\n
+ *    From assignment web page: For this assignment, interface "eth1" will 
+ *    always be the internal interface and all other interfaces will always 
+ *    be external interfaces.
+ * @brief Returns the interface pointer for the internal NAT interface.
+ * @param sr pointer to simple router state structure.
+ * @return pointer to the internal router interface. 
+ */
+static inline sr_if_t* getInternalInterface(sr_instance_t *sr)
+{
+   return sr_get_interface(sr, internalInterfaceName);
+}
+
+/**
+ * natEnabled()\n
+ * IP Stack Level: Network Layer (IP)\n
+ * @brief returns whether or not NAT functionality is enabled.
+ * @param sr pointer to simple router structure.
+ * @return true if NAT functionality is enabled.
+ * @return false otherwise.
+ */
+static inline bool natEnabled(sr_instance_t const * const sr)
+{
+   return (sr->nat != NULL);
 }
 
 /*
@@ -95,13 +131,19 @@ static void linkArpAndSendPacket(struct sr_instance* sr, sr_ethernet_hdr_t* pack
    unsigned int length, sr_rt_t const * const route);
 static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, sr_if_t const * const interface);
+static void networkHandleReceivedIpPacketToUs(struct sr_instance* sr, sr_ip_hdr_t* packet,
+   unsigned int length, sr_if_t const * const interface);
 static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, sr_if_t const * const interface);
 static void networkSendIcmpEchoReply(struct sr_instance* sr, sr_ip_hdr_t* echoRequestPacket,
    unsigned int length);
+static void networkSendIcmpTtlExpired(struct sr_instance* sr, sr_ip_hdr_t* originalPacket,
+   unsigned int length, sr_if_t const * const receivedInterface);
 static void networkForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, unsigned int length,
    const struct sr_if* const receivedInterface);
-static bool networkIpDesinationIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
+static void natHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, unsigned int length,
+   const struct sr_if* const receivedInterface);
+static bool networkIpDestinationIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
 static bool networkIpSourceIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
 static int networkGetMaskLength(uint32_t mask);
 static struct sr_rt* networkGetPacketRoute(struct sr_instance* sr, in_addr_t destIp);
@@ -516,75 +558,95 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
       return;
    }
    
-   if (networkIpDesinationIsUs(sr, packet))
+   if (!natEnabled(sr))
    {
-      /* Somebody must like me, because they're sending packets to my 
-       * address! */
-      if (packet->ip_p == (uint8_t) ip_protocol_icmp)
+      if (networkIpDestinationIsUs(sr, packet))
       {
-         networkHandleIcmpPacket(sr, packet, length, interface);
+         networkHandleReceivedIpPacketToUs(sr, packet, length, interface);
       }
       else
       {
-         /* I don't process anything else! Send port unreachable. */
-         LOG_MESSAGE("Received Non-ICMP packet destined for me. Sending ICMP port unreachable.\n");
-         NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_port_unreachable, packet);
+         /* Decrement TTL and forward. */
+         uint8_t packetTtl = packet->ip_ttl - 1;
+         if (packetTtl == 0)
+         {
+            /* Uh oh... someone's just about run out of time. */
+            networkSendIcmpTtlExpired(sr, packet, length, interface);
+         }
+         else
+         {
+            /* Recalculate checksum since we altered the packet header. */
+            packet->ip_ttl = packetTtl;
+            packet->ip_sum = 0;
+            packet->ip_sum = cksum(packet, getIpHeaderLength(packet));
+            
+            networkForwardIpPacket(sr, packet, length, interface);
+         }
       }
    }
    else
    {
-      /* Decrement TTL and forward. */
-      packet->ip_ttl -= 1;
-      if (packet->ip_ttl == 0)
+      if (networkIpDestinationIsUs(sr, packet))
       {
-         /* Uh oh... someone's just about run out of time. */
-         uint8_t* replyPacket = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) 
-            + sizeof(sr_icmp_t3_hdr_t));
-         sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
-         sr_icmp_t3_hdr_t* replyIcmpHeader = (sr_icmp_t3_hdr_t*) ((uint8_t*) replyIpHeader
-            + sizeof(sr_ip_hdr_t));
-         
-         LOG_MESSAGE("TTL expired on received packet. Sending an ICMP time exceeded.\n");
-         
-         /* To maintain integrity of the sent packet, we should probably send 
-          * the packet back as we received it. */
-         packet->ip_ttl = 1;
-         
-         /* Fill in IP header */
-         replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
-         replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
-         replyIpHeader->ip_tos = 0;
-         replyIpHeader->ip_len = htons(sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
-         replyIpHeader->ip_id = htons(ipIdentifyNumber); ipIdentifyNumber++;
-         replyIpHeader->ip_off = htons(IP_DF);
-         replyIpHeader->ip_ttl = DEFAULT_TTL;
-         replyIpHeader->ip_p = ip_protocol_icmp;
-         replyIpHeader->ip_sum = 0;
-         replyIpHeader->ip_src = interface->ip;
-         replyIpHeader->ip_dst = packet->ip_src; /* Already in network byte order. */
-         replyIpHeader->ip_sum = cksum(replyIpHeader, getIpHeaderLength(replyIpHeader));
-         
-         /* Fill in ICMP fields. */
-         replyIcmpHeader->icmp_type = icmp_type_time_exceeded;
-         replyIcmpHeader->icmp_code = 0;
-         replyIcmpHeader->icmp_sum = 0;
-         memcpy(replyIcmpHeader->data, packet, ICMP_DATA_SIZE);
-         replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, sizeof(sr_icmp_t3_hdr_t));
-         
-         linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket,
-            sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t),
-            networkGetPacketRoute(sr, ntohl(packet->ip_src)));
-         
-         free(replyPacket);
+         /* Internal hosts can send packets to all of our interface, but do 
+          * not let external hosts to send packets to our internal interface's 
+          * IP. */
+         if ((getInternalInterface(sr)->ip == interface->ip)
+            || (getInternalInterface(sr)->ip != packet->ip_dst))
+         {
+            networkHandleReceivedIpPacketToUs(sr, packet, length, interface);
+         }
+         else
+         {
+            /* TODO: Destination unreachable? */
+            LOG_MESSAGE("Device outside NAT attempted to ping internal interface. Dropping.\n");
+         }
       }
       else
       {
-         /* Recalculate checksum since we altered the packet header. */
-         packet->ip_sum = 0;
-         packet->ip_sum = cksum(packet, getIpHeaderLength(packet));
-         
-         networkForwardIpPacket(sr, packet, length, interface);
+         /* Decrement TTL and forward. */
+         uint8_t packetTtl = packet->ip_ttl - 1;
+         if (packetTtl == 0)
+         {
+            /* Uh oh... someone's just about run out of time. */
+            networkSendIcmpTtlExpired(sr, packet, length, interface);
+         }
+         else
+         {
+            /* Recalculate checksum since we altered the packet header. */
+            packet->ip_ttl = packetTtl;
+            packet->ip_sum = 0;
+            packet->ip_sum = cksum(packet, getIpHeaderLength(packet));
+            
+            natHandleReceivedIpPacket(sr, packet, length, interface);
+         }
       }
+   }
+}
+
+/**
+ * networkHandleReceivedIpPacketToUs()\n
+ * IP Stack Level: Network (IP)\n
+ * @brief Function handles a received IP packet destined for the router.
+ * @param sr pointer to simple router state structure.
+ * @param packet pointer to IP header of packet
+ * @param length length in bytes of packet IP header and payload.
+ * @param interface pointer to router interface that packet was received.
+ */
+static void networkHandleReceivedIpPacketToUs(struct sr_instance* sr, sr_ip_hdr_t* packet,
+   unsigned int length, sr_if_t const * const interface)
+{
+   /* Somebody must like me, because they're sending packets to my 
+    * address! */
+   if (packet->ip_p == (uint8_t) ip_protocol_icmp)
+   {
+      networkHandleIcmpPacket(sr, packet, length, interface);
+   }
+   else
+   {
+      /* I don't process anything else! Send port unreachable. */
+      LOG_MESSAGE("Received Non-ICMP packet destined for me. Sending ICMP port unreachable.\n");
+      NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_port_unreachable, packet);
    }
 }
 
@@ -632,6 +694,12 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    }
 }
 
+/**
+ * networkSendIcmpEchoReply()
+ * @param sr
+ * @param echoRequestPacket
+ * @param length
+ */
 static void networkSendIcmpEchoReply(struct sr_instance* sr, sr_ip_hdr_t* echoRequestPacket,
    unsigned int length)
 {
@@ -675,6 +743,150 @@ static void networkSendIcmpEchoReply(struct sr_instance* sr, sr_ip_hdr_t* echoRe
    /* Reply payload built. Ship it! */
    linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket, length + sizeof(sr_ethernet_hdr_t),
       networkGetPacketRoute(sr, ntohl(echoRequestPacket->ip_src)));
+   
+   free(replyPacket);
+}
+
+static void natHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
+   unsigned int length, const struct sr_if* const receivedInterface)
+{
+   if (packet->ip_p == ip_protocol_icmp)
+   {
+      sr_nat_mapping_t *natLookupResult;
+      sr_icmp_hdr_t *icmpPacketHeader = (sr_icmp_hdr_t *) (((uint8_t*) packet)
+         + getIpHeaderLength(packet));
+      
+      /* TODO: Packet integrity */
+      
+      if ((icmpPacketHeader->icmp_type == icmp_type_echo_request)
+         || (icmpPacketHeader->icmp_type == icmp_type_echo_reply))
+      {
+         sr_icmp_t0_hdr_t *echoPacketHeader = (sr_icmp_t0_hdr_t *) icmpPacketHeader;
+         struct sr_rt* forwardRoute = networkGetPacketRoute(sr, ntohl(packet->ip_dst));
+         
+         if (getInternalInterface(sr)->ip == receivedInterface->ip)
+         {
+            natLookupResult = sr_nat_lookup_internal(sr->nat, ntohl(packet->ip_src),
+               ntohs(echoPacketHeader->ident), nat_mapping_icmp);
+            if (natLookupResult == NULL)
+            {
+               natLookupResult = sr_nat_insert_mapping(sr->nat, ntohl(packet->ip_src),
+                  ntohs(echoPacketHeader->ident), nat_mapping_icmp);
+            }
+         }
+         else
+         {
+            natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(echoPacketHeader->ident),
+               nat_mapping_icmp);
+         }
+         
+         if (natLookupResult == NULL)
+         {
+            LOG_MESSAGE("NAT forward rejected for received packet.");
+            /* TODO: ICMP thing? */
+            return;
+         }
+         
+         /* TODO: combine this logic with where it is elsewhere */
+         if ((forwardRoute != NULL) && (strcmp(forwardRoute->interface, receivedInterface->name) != 0))
+         {
+            uint8_t* rewrittenPacket = malloc(sizeof(sr_ethernet_hdr_t) + length);
+            sr_ip_hdr_t* rewrittenIpHeader = (sr_ip_hdr_t*) (rewrittenPacket + sizeof(sr_ethernet_hdr_t));
+            sr_icmp_t0_hdr_t* rewrittenIcmpHeader = (sr_icmp_t0_hdr_t*) ((uint8_t*) rewrittenIpHeader
+               + getIpHeaderLength(packet));
+            int icmpLength = length - getIpHeaderLength(packet);
+            
+            assert(natLookupResult);
+            assert(rewrittenPacket);
+            
+            LOG_MESSAGE("NAT forward allowed from interface %s to %s\n", receivedInterface->name, 
+               forwardRoute->interface);
+            
+            /* Use the original packet as a baseline. */
+            memcpy(rewrittenPacket, packet, length);
+            
+            /* Handle ICMP identify remap and validate. */
+            rewrittenIcmpHeader->ident = htons(natLookupResult->aux_ext);
+            rewrittenIcmpHeader->icmp_sum = 0;
+            cksum(rewrittenIcmpHeader, icmpLength);
+            
+            /* Handle IP address remap and validate. */
+            rewrittenIpHeader->ip_src = htonl(natLookupResult->ip_ext);
+            rewrittenIpHeader->ip_sum = 0;
+            cksum(rewrittenIpHeader, getIpHeaderLength(rewrittenIpHeader));
+            
+            linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) rewrittenPacket, length + sizeof(sr_ethernet_hdr_t), forwardRoute);
+            
+            free(rewrittenPacket);
+         }
+         else
+         {
+            LOG_MESSAGE("Could not find a route for provided packet.\n");
+            /* TODO ICMP Net Unreach */
+         }
+         
+         free(natLookupResult);
+      }
+      else
+      {
+         /* This packet is actually associated with a stream. */
+      }
+   }
+   else if (packet->ip_p == ip_protocol_tcp)
+   {
+      /* TODO */
+   }
+   else
+   {
+      LOG_MESSAGE("Packed received with unknown transport protocol 0x%x. Dropping.\n", packet->ip_p);
+      /* TODO: Something else? */
+   }
+}
+
+/**
+ * networkSendIcmpTtlExpired()\n
+ * IP Stack Layer: Network (IP)\n
+ * @param sr Pointer to simple router structure.
+ * @param originalPacket pointer to original received packet in which TTL has expired.
+ * @param length length of the original received packet.
+ * @param receivedInterface interface in which the packet was received.
+ */
+static void networkSendIcmpTtlExpired(struct sr_instance* sr, sr_ip_hdr_t* originalPacket,
+   unsigned int length, sr_if_t const * const receivedInterface)
+{
+   uint8_t* replyPacket = malloc(
+      sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
+   sr_ip_hdr_t* replyIpHeader = (sr_ip_hdr_t*) (replyPacket + sizeof(sr_ethernet_hdr_t));
+   sr_icmp_t3_hdr_t* replyIcmpHeader = (sr_icmp_t3_hdr_t*) ((uint8_t*) replyIpHeader
+      + sizeof(sr_ip_hdr_t));
+   
+   LOG_MESSAGE("TTL expired on received packet. Sending an ICMP time exceeded.\n");
+   
+   /* Fill in IP header */
+   replyIpHeader->ip_v = SUPPORTED_IP_VERSION;
+   replyIpHeader->ip_hl = MIN_IP_HEADER_LENGTH;
+   replyIpHeader->ip_tos = 0;
+   replyIpHeader->ip_len = htons(sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t));
+   replyIpHeader->ip_id = htons(ipIdentifyNumber);
+   ipIdentifyNumber++;
+   replyIpHeader->ip_off = htons(IP_DF);
+   replyIpHeader->ip_ttl = DEFAULT_TTL;
+   replyIpHeader->ip_p = ip_protocol_icmp;
+   replyIpHeader->ip_sum = 0;
+   replyIpHeader->ip_src = receivedInterface->ip;
+   replyIpHeader->ip_dst = originalPacket->ip_src; /* Already in network byte order. */
+   replyIpHeader->ip_sum = cksum(replyIpHeader, getIpHeaderLength(replyIpHeader));
+   
+   /* Fill in ICMP fields. */
+   replyIcmpHeader->icmp_type = icmp_type_time_exceeded;
+   replyIcmpHeader->icmp_code = 0;
+   replyIcmpHeader->icmp_sum = 0;
+   memcpy(replyIcmpHeader->data, originalPacket, ICMP_DATA_SIZE);
+   replyIcmpHeader->icmp_sum = cksum(replyIcmpHeader, sizeof(sr_icmp_t3_hdr_t));
+   
+   linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*) replyPacket,
+      sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t),
+      networkGetPacketRoute(sr, ntohl(originalPacket->ip_src)));
    
    free(replyPacket);
 }
@@ -822,7 +1034,7 @@ static void linkArpAndSendPacket(sr_instance_t *sr, sr_ethernet_hdr_t* packet,
  * @param packet pointer to received packet.
  * @return true if we were the destination of this packet. false otherwise.
  */
-static bool networkIpDesinationIsUs(struct sr_instance* sr,
+static bool networkIpDestinationIsUs(struct sr_instance* sr,
    const sr_ip_hdr_t* const packet)
 {
    struct sr_if* interfaceIterator;
