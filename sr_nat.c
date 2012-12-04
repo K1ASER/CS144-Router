@@ -163,6 +163,7 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    
    /* handle insert here, create a mapping, and then return a copy of it */
    struct sr_nat_mapping *mapping = malloc(sizeof(sr_nat_mapping_t));
+   struct sr_nat_mapping *copy = malloc(sizeof(sr_nat_mapping_t));
    
    if (type == nat_mapping_icmp)
    {
@@ -204,8 +205,10 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    mapping->next = nat->mappings;
    nat->mappings = mapping;
    
+   memcpy(copy, mapping, sizeof(sr_nat_mapping_t));
+   
    pthread_mutex_unlock(&(nat->lock));
-   return mapping;
+   return copy;
 }
 
 /**
