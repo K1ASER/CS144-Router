@@ -156,6 +156,7 @@ static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t
 static NatDestinationResult_t natPacketDestination(sr_instance_t * sr, 
    sr_ip_hdr_t const * const packet, unsigned int length, sr_if_t const * const receivedInterface, 
    sr_nat_mapping_t * associatedMapping);
+static bool icmpPerformIntegrityCheck(sr_icmp_hdr_t * icmpPacket, unsigned int length);
 static bool networkIpDestinationIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
 static bool networkIpSourceIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
 static int networkGetMaskLength(uint32_t mask);
@@ -651,20 +652,10 @@ static void networkHandleIcmpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    sr_icmp_hdr_t* icmpHeader = (sr_icmp_hdr_t*) (((uint8_t*) packet) + getIpHeaderLength(packet));
    int icmpLength = length - getIpHeaderLength(packet);
    
-   /* Check the integrity of the ICMP packet */
+   if (!icmpPerformIntegrityCheck(icmpHeader, icmpLength))
    {
-      uint16_t headerChecksum = icmpHeader->icmp_sum;
-      uint16_t calculatedChecksum = 0;
-      icmpHeader->icmp_sum = 0;
-      
-      calculatedChecksum = cksum(icmpHeader, icmpLength);
-      
-      if (headerChecksum != calculatedChecksum)
-      {
-         /* Bad checksum... */
-         LOG_MESSAGE("ICMP checksum failed. Dropping received packet.\n");
-         return;
-      }
+      LOG_MESSAGE("ICMP checksum failed. Dropping received packet.\n");
+      return;
    }
    
    if (icmpHeader->icmp_type == icmp_type_echo_request)
@@ -741,7 +732,12 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
       sr_icmp_hdr_t *icmpPacketHeader = (sr_icmp_hdr_t *) (((uint8_t*) packet)
          + getIpHeaderLength(packet));
       
-      /* TODO: Packet integrity */
+      if (!icmpPerformIntegrityCheck(icmpPacketHeader, length - getIpHeaderLength(packet)))
+      {
+         LOG_MESSAGE("ICMP checksum failed. Dropping received packet.\n");
+         return;
+      }
+      
 
       if ((icmpPacketHeader->icmp_type == icmp_type_echo_request)
          || (icmpPacketHeader->icmp_type == icmp_type_echo_reply))
@@ -1010,6 +1006,24 @@ static void linkArpAndSendPacket(sr_instance_t *sr, sr_ethernet_hdr_t* packet,
    }
 }
 
+static bool icmpPerformIntegrityCheck(sr_icmp_hdr_t *icmpPacket, unsigned int length)
+{
+   /* Check the integrity of the ICMP packet */
+   uint16_t headerChecksum = icmpPacket->icmp_sum;
+   uint16_t calculatedChecksum = 0;
+   icmpPacket->icmp_sum = 0;
+   
+   calculatedChecksum = cksum(icmpPacket, length);
+   icmpPacket->icmp_sum = headerChecksum;
+   
+   if (headerChecksum != calculatedChecksum)
+   {
+      /* Bad checksum... */
+      return false;
+   }
+   return true;
+}
+
 /**
  * networkIpDesinationIsUs()\n
  * IP Stack Level: Network (IP)\n
@@ -1097,6 +1111,12 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
          {
             sr_icmp_hdr_t const * const icmpHdr =
                (sr_icmp_hdr_t const * const ) (((uint8_t*) packet) + getIpHeaderLength(packet));
+            
+            if (!icmpPerformIntegrityCheck(icmpHdr, length - getIpHeaderLength(packet)))
+            {
+               LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
+               return NAT_PACKET_DROP;
+            }
             
             if (icmpHdr->icmp_type == icmp_type_desination_unreachable)
             {
