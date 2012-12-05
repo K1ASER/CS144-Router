@@ -73,7 +73,7 @@ void *sr_nat_timeout(void *nat_ptr)
          switch (mappingWalker->type)
          {
             case nat_mapping_icmp:
-               if (difftime(mappingWalker->last_updated, curtime) > nat->icmpTimeout)
+               if (difftime(curtime, mappingWalker->last_updated) > nat->icmpTimeout)
                {
                   sr_nat_mapping_t* next = mappingWalker->next;
                   LOG_MESSAGE("ICMP mapping from %u.%u.%u.%u:%u to %u timed out.\n", 
