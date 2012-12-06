@@ -154,9 +154,10 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
 static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, 
    unsigned int length, const struct sr_if* const receivedInterface, sr_nat_mapping_t * natMapping);
 static NatDestinationResult_t natPacketDestination(sr_instance_t * sr, 
-   sr_ip_hdr_t const * const packet, unsigned int length, sr_if_t const * const receivedInterface, 
+   sr_ip_hdr_t * const packet, unsigned int length, sr_if_t const * const receivedInterface, 
    sr_nat_mapping_t * associatedMapping);
-static bool icmpPerformIntegrityCheck(sr_icmp_hdr_t * icmpPacket, unsigned int length);
+static bool icmpPerformIntegrityCheck(sr_icmp_hdr_t * const icmpPacket, unsigned int length);
+static bool tcpPerformIntegrityCheck(sr_ip_hdr_t * const tcpPacket, unsigned int length);
 static bool networkIpDestinationIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
 static bool networkIpSourceIsUs(struct sr_instance* sr, sr_ip_hdr_t const * const packet);
 static int networkGetMaskLength(uint32_t mask);
@@ -736,8 +737,7 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
       {
          LOG_MESSAGE("ICMP checksum failed. Dropping received packet.\n");
          return;
-      }
-      
+      }      
 
       if ((icmpPacketHeader->icmp_type == icmp_type_echo_request)
          || (icmpPacketHeader->icmp_type == icmp_type_echo_reply))
@@ -765,11 +765,14 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
    }
    else if (packet->ip_p == ip_protocol_tcp)
    {
-      /* TODO */
+      if (!tcpPerformIntegrityCheck(packet, length))
+      {
+         LOG_MESSAGE("TCP checksum failed. Dropping received packet.\n");
+      }
    }
    else
    {
-      LOG_MESSAGE("Packed received with unknown transport protocol 0x%x. Dropping.\n", packet->ip_p);
+      LOG_MESSAGE("Packet received with unknown transport protocol 0x%x. Dropping.\n", packet->ip_p);
       /* TODO: Something else? */
    }
 }
@@ -1006,7 +1009,16 @@ static void linkArpAndSendPacket(sr_instance_t *sr, sr_ethernet_hdr_t* packet,
    }
 }
 
-static bool icmpPerformIntegrityCheck(sr_icmp_hdr_t *icmpPacket, unsigned int length)
+/**
+ * icmpPerformIntegrityCheck()\n
+ * IP Stack Level: Transport (ICMP)\n
+ * @brief Performs the standard ICMP checksum on a received ICMP packet.
+ * @param icmpPacket pointer to the ICMP payload.
+ * @param length length of the ICMP payload.
+ * @return true if the packet checksum succeeds.
+ * @return false otherwise.
+ */
+static bool icmpPerformIntegrityCheck(sr_icmp_hdr_t * const icmpPacket, unsigned int length)
 {
    /* Check the integrity of the ICMP packet */
    uint16_t headerChecksum = icmpPacket->icmp_sum;
@@ -1022,6 +1034,49 @@ static bool icmpPerformIntegrityCheck(sr_icmp_hdr_t *icmpPacket, unsigned int le
       return false;
    }
    return true;
+}
+
+/**
+ * tcpPerformIntegrityCheck()\n
+ * IP Stack Level: Transport (TCP)\n
+ * @brief Performs the standard TCP checksum on a received TCP packet.
+ * @param tcpPacket pointer to the IP datagram.
+ * @param length length of the IP datagram
+ * @return true if the packet checksum succeeds.
+ * @return false otherwise.
+ * @note We need the IP datagram pointer so the function can create the TCP 
+ *       Pseudo-header for calculating the checksum.
+ */
+static bool tcpPerformIntegrityCheck(sr_ip_hdr_t * tcpPacket, unsigned int length)
+{
+   bool ret;
+   unsigned int tcpLength = length - getIpHeaderLength(tcpPacket);
+   uint8_t *packetCopy = malloc(sizeof(sr_tcp_ip_pseudo_hdr_t) + tcpLength);
+   sr_tcp_ip_pseudo_hdr_t * checksummedHeader = (sr_tcp_ip_pseudo_hdr_t *) packetCopy;
+   sr_tcp_hdr_t * tcpHeader = (sr_tcp_hdr_t *) (tcpPacket + getIpHeaderLength(tcpPacket));
+   
+   uint16_t calculatedChecksum = 0;
+   uint16_t headerChecksum = tcpHeader->checksum;
+   tcpHeader->checksum = 0;
+   
+   /* I wish there was a better way to do this with pointer magic, but I don't 
+    * see it. Make a copy of the packet and prepend the IP pseudo-header to 
+    * the front. */
+   memcpy(packetCopy + getIpHeaderLength(tcpPacket),
+      ((uint8_t *) tcpPacket) + getIpHeaderLength(tcpPacket), tcpLength);
+   checksummedHeader->sourceAddress = tcpPacket->ip_src;
+   checksummedHeader->destinationAddress = tcpPacket->ip_dst;
+   checksummedHeader->zeros = 0;
+   checksummedHeader->protocol = ip_protocol_tcp;
+   checksummedHeader->tcpLength = htons(tcpLength);
+   
+   calculatedChecksum = cksum(packetCopy, sizeof(sr_tcp_ip_pseudo_hdr_t) + tcpLength);
+   
+   ret = (headerChecksum == calculatedChecksum) ? true : false; 
+   
+   free(packetCopy);
+   
+   return ret;
 }
 
 /**
@@ -1094,8 +1149,23 @@ static int networkGetMaskLength(uint32_t mask)
    return ret;
 }
 
+/**
+ * natPacketDestination()\n
+ * @brief Checks NAT lookup table to find the destination of a received packet.
+ * @param sr pointer to the simple router state structure.
+ * @param packet pointer to the received IP datagram.
+ * @param length length of the received IP datagram.
+ * @param receivedInterface pointer to the interface structure on which the packet was received.
+ * @param associatedMapping an output value of the associated NAT mapping if one exists. Valid 
+ *        when INBOUND or OUTBOUND are returned. Memory needs to be allocated by the calling 
+ *        function for this to be populated.
+ * @return NAT_PACKET_FOR_ROUTER if the packet is for us.
+ * @return NAT_PACKET_DROP if the packet should be dropped (bad checksum, unsupported protocol, etc.)
+ * @return NAT_PACKET_OUTBOUND if the packet is traversing the NAT from internal -> external.
+ * @return NAT_PACKET_INBOUND if the packet is traversing the NAT from external -> internal.
+ */
 static NatDestinationResult_t natPacketDestination(sr_instance_t * sr, 
-   sr_ip_hdr_t const * const packet, unsigned int length, sr_if_t const * const receivedInterface, 
+   sr_ip_hdr_t * const packet, unsigned int length, sr_if_t const * const receivedInterface,
    sr_nat_mapping_t * associatedMapping)
 {
    sr_nat_mapping_t * natLookupResult = NULL;
@@ -1105,119 +1175,147 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
       {
          return NAT_PACKET_FOR_ROUTER;
       }
-      else
+   
+      if (packet->ip_p == ip_protocol_icmp)
       {
-         if (packet->ip_p == ip_protocol_icmp)
+         sr_icmp_hdr_t * const icmpHdr =
+            (sr_icmp_hdr_t * const ) (((uint8_t*) packet) + getIpHeaderLength(packet));
+         
+         if (!icmpPerformIntegrityCheck(icmpHdr, length - getIpHeaderLength(packet)))
          {
-            sr_icmp_hdr_t const * const icmpHdr =
-               (sr_icmp_hdr_t const * const ) (((uint8_t*) packet) + getIpHeaderLength(packet));
+            LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
+            return NAT_PACKET_DROP;
+         }
+         
+         if (icmpHdr->icmp_type == icmp_type_desination_unreachable)
+         {
+            /* Rather than attempting to find an associated ICMP mapping, we need to 
+             * find an associated TCP mapping. */
+            sr_icmp_t3_hdr_t * const icmpUnreachHdr =
+               (sr_icmp_t3_hdr_t * const ) icmpHdr;
             
-            if (!icmpPerformIntegrityCheck(icmpHdr, length - getIpHeaderLength(packet)))
-            {
-               LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
-               return NAT_PACKET_DROP;
-            }
+            /* The data section of an ICMP destination unreachable should be 
+             * the associated packet's IP header and first 8 bytes of the IP 
+             * payload. */
+            sr_ip_hdr_t * const errorPacket =
+               (sr_ip_hdr_t * const ) icmpUnreachHdr->data;
+            sr_tcp_hdr_t * const errorTcpHdr =
+               (sr_tcp_hdr_t * const ) (((uint8_t*) errorPacket)
+                  + getIpHeaderLength(errorPacket));
             
-            if (icmpHdr->icmp_type == icmp_type_desination_unreachable)
+            if (errorPacket->ip_p == ip_protocol_tcp)
             {
-               /* Rather than attempting to find an associated ICMP mapping, we need to 
-                * find an associated TCP mapping. */
-               sr_icmp_t3_hdr_t const * const icmpUnreachHdr =
-                  (sr_icmp_t3_hdr_t const * const ) icmpHdr;
-               
-               /* The data section of an ICMP destination unreachable should be 
-                * the associated packet's IP header and first 8 bytes of the IP 
-                * payload. */
-               sr_ip_hdr_t const * const errorPacket =
-                  (sr_ip_hdr_t const * const ) icmpUnreachHdr->data;
-               sr_tcp_hdr_t const * const errorTcpHdr =
-                  (sr_tcp_hdr_t const * const ) (((uint8_t*) errorPacket)
-                     + getIpHeaderLength(errorPacket));
-               
-               if (errorPacket->ip_p == ip_protocol_tcp)
+               /* TODO: COPY PASTA */
+               natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(errorTcpHdr->sourcePort),
+                  nat_mapping_tcp);
+               if (natLookupResult != NULL)
                {
-                  /* TODO: COPY PASTA */
-                  natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(errorTcpHdr->sourcePort),
-                     nat_mapping_tcp);
-                  if (natLookupResult != NULL )
+                  /* Hmm...seems like an okay mapping. */
+                  if (associatedMapping != NULL)
                   {
-                     /* Hmm...seems like an okay mapping. */
-                     if (associatedMapping != NULL)
-                     {
-                        memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-                     }
-                     free(natLookupResult);
-                     
-                     return NAT_PACKET_OUTBOUND;
+                     memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
                   }
-                  else
-                  {
-                     /* No associated mapping. Drop it like it's hot! */
-                     return NAT_PACKET_DROP;
-                  }
+                  free(natLookupResult);
+                  
+                  return NAT_PACKET_OUTBOUND;
                }
                else
                {
-                  /* Unsupported protocol. No way we have a mapping. */
+                  /* No associated mapping. Drop it like it's hot! */
                   return NAT_PACKET_DROP;
                }
             }
-            else if ((icmpHdr->icmp_type == icmp_type_echo_reply)
-               || (icmpHdr->icmp_type == icmp_type_echo_request))
-            {
-               sr_icmp_t0_hdr_t const * const icmpPingHdr =
-                  (sr_icmp_t0_hdr_t const * const ) icmpHdr;
-               natLookupResult = sr_nat_lookup_internal(sr->nat, ntohl(packet->ip_src), ntohs(icmpPingHdr->ident),
-                  nat_mapping_icmp);
-               if (natLookupResult == NULL)
-               {
-                  natLookupResult = sr_nat_insert_mapping(sr->nat, ntohl(packet->ip_src), ntohs(icmpPingHdr->ident),
-                     nat_mapping_icmp);
-               }
-               
-               if (associatedMapping != NULL)
-               {
-                  memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-               }
-               return NAT_PACKET_OUTBOUND;
-            }
             else
             {
-               /* To hell with best effort. */
+               /* Unsupported protocol. No way we have a mapping. */
                return NAT_PACKET_DROP;
             }
          }
-         else if (packet->ip_p == ip_protocol_tcp)
+         else if ((icmpHdr->icmp_type == icmp_type_echo_reply)
+            || (icmpHdr->icmp_type == icmp_type_echo_request))
          {
+            sr_icmp_t0_hdr_t * const icmpPingHdr =
+               (sr_icmp_t0_hdr_t * const ) icmpHdr;
+            natLookupResult = sr_nat_lookup_internal(sr->nat, ntohl(packet->ip_src), ntohs(icmpPingHdr->ident),
+               nat_mapping_icmp);
+            if (natLookupResult == NULL)
+            {
+               natLookupResult = sr_nat_insert_mapping(sr->nat, ntohl(packet->ip_src), ntohs(icmpPingHdr->ident),
+                  nat_mapping_icmp);
+            }
+            
+            if (associatedMapping != NULL)
+            {
+               memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
+            }
             return NAT_PACKET_OUTBOUND;
          }
          else
          {
+            /* To hell with best effort. */
             return NAT_PACKET_DROP;
          }
+      }
+      else if (packet->ip_p == ip_protocol_tcp)
+      {
+         sr_tcp_hdr_t * const tcpHdr = (sr_tcp_hdr_t * const ) (((uint8_t*) packet)
+            + getIpHeaderLength(packet));
+         
+         if (!tcpPerformIntegrityCheck(packet, length))
+         {
+            LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
+            return NAT_PACKET_DROP;
+         }
+         
+         natLookupResult = sr_nat_lookup_internal(sr->nat, ntohl(packet->ip_src),
+            ntohs(tcpHdr->sourcePort), nat_mapping_tcp);
+         
+         if ((natLookupResult == NULL) && (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M))
+         {
+            /* The packet is an outbound SYN. Make a mapping. */
+            natLookupResult = sr_nat_insert_mapping(sr->nat, ntohl(packet->ip_src),
+               ntohs(tcpHdr->sourcePort), nat_mapping_tcp);
+         }
+         
+         if (associatedMapping != NULL)
+         {
+            memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
+         }
+         return NAT_PACKET_OUTBOUND;
+      }
+      else
+      {
+         /* Unknown protocol type. */
+         return NAT_PACKET_DROP;
       }
    }
    else
    {
       if (packet->ip_p == ip_protocol_icmp)
       {
-         sr_icmp_hdr_t const * const icmpHdr = (sr_icmp_hdr_t const * const ) (((uint8_t*) packet)
+         sr_icmp_hdr_t * const icmpHdr = (sr_icmp_hdr_t * const ) (((uint8_t*) packet)
             + getIpHeaderLength(packet));
+         
+         if (!icmpPerformIntegrityCheck(icmpHdr, length - getIpHeaderLength(packet)))
+         {
+            LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
+            return NAT_PACKET_DROP;
+         }
          
          if (icmpHdr->icmp_type == icmp_type_desination_unreachable)
          {
             /* Attempt to fulfill RFC-5382 REQ-9. Check for an associated TCP 
              * connection for this ICMP error packet. */
-            sr_icmp_t3_hdr_t const * const icmpUnreachHdr =
-               (sr_icmp_t3_hdr_t const * const ) icmpHdr;
+            sr_icmp_t3_hdr_t * const icmpUnreachHdr =
+               (sr_icmp_t3_hdr_t * const ) icmpHdr;
             
             /* The data section of an ICMP destination unreachable should be 
              * the associated packet's IP header and first 8 bytes of the IP 
              * payload. */
-            sr_ip_hdr_t const * const errorPacket =
-               (sr_ip_hdr_t const * const ) icmpUnreachHdr->data;
-            sr_tcp_hdr_t const * const errorTcpHdr =
-               (sr_tcp_hdr_t const * const ) (((uint8_t*) errorPacket)
+            sr_ip_hdr_t * const errorPacket =
+               (sr_ip_hdr_t * const ) icmpUnreachHdr->data;
+            sr_tcp_hdr_t * const errorTcpHdr =
+               (sr_tcp_hdr_t * const ) (((uint8_t*) errorPacket)
                   + getIpHeaderLength(errorPacket));
             
             if (errorPacket->ip_p == ip_protocol_tcp)
@@ -1250,8 +1348,8 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
          else if ((icmpHdr->icmp_type == icmp_type_echo_reply) 
             || (icmpHdr->icmp_type == icmp_type_echo_request))
          {
-            sr_icmp_t0_hdr_t const * const icmpPingHdr =
-               (sr_icmp_t0_hdr_t const * const ) icmpHdr;
+            sr_icmp_t0_hdr_t * const icmpPingHdr =
+               (sr_icmp_t0_hdr_t * const ) icmpHdr;
             natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(icmpPingHdr->ident),
                nat_mapping_icmp);
             if (natLookupResult != NULL)
@@ -1280,8 +1378,15 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
       else if (packet->ip_p == ip_protocol_tcp)
       {
          /* So much easier than ICMP. Lookup and see what the story is. */
-         sr_tcp_hdr_t const * const tcpHdr = (sr_tcp_hdr_t const * const ) (((uint8_t*) packet)
+         sr_tcp_hdr_t * const tcpHdr = (sr_tcp_hdr_t * const ) (((uint8_t*) packet)
             + getIpHeaderLength(packet));
+         
+         if (!tcpPerformIntegrityCheck(packet, length))
+         {
+            LOG_MESSAGE("TCP checksum of inbound packet failed. Dropping packet.\n");
+            return NAT_PACKET_DROP;
+         }
+         
          natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(tcpHdr->sourcePort),
             nat_mapping_tcp);
          if (natLookupResult != NULL)
@@ -1303,7 +1408,8 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
       }
       else
       {
-         /* Apparently my best effort is just not good enough. */
+         /* Apparently my best effort is just not good enough. Unsupported 
+          * protocol. */
          return NAT_PACKET_DROP;
       }
    }

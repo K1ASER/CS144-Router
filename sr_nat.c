@@ -181,9 +181,16 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    }
    else if (type == nat_mapping_tcp)
    {
+      sr_nat_connection_t * firstConnection = malloc(sizeof(sr_nat_connection_t));
+      assert(firstConnection);
+      
       LOG_MESSAGE("Creating TCP mapping from %u.%u.%u.%u:%u to %u\n", (ip_int >> 24) & 0xFF, 
          (ip_int >> 16) & 0xFF, (ip_int >> 8) & 0xFF, ip_int & 0xFF, aux_int, nat->nextTcpPortNumber);
       mapping->aux_ext = nat->nextTcpPortNumber;
+      
+      firstConnection->connectionState = nat_conn_outbound_syn;
+      firstConnection->next = NULL;
+      
       if (++nat->nextTcpPortNumber > LAST_PORT_NUMBER)
       {
          /* TODO: Point of improvement. We should really check if the port 
@@ -199,7 +206,6 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    mapping->ip_int = ip_int;
    mapping->last_updated = time(NULL);
    mapping->type = type;
-   mapping->conns = NULL; /* TODO */
    
    /* Add mapping to the front of the list. */
    mapping->next = nat->mappings;

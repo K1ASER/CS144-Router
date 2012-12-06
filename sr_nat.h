@@ -21,6 +21,8 @@
 #define STARTING_PORT_NUMBER  (50000)
 #define LAST_PORT_NUMBER      (59999)
 
+#define SIMULTANIOUS_OPEN_WAIT_TIME (6)
+
 /*
  * Public Types
  */
@@ -31,10 +33,17 @@ typedef enum
 /* nat_mapping_udp, */
 } sr_nat_mapping_type;
 
+typedef enum
+{
+   nat_conn_outbound_syn, /**< outbound SYN sent. */
+   nat_conn_inbound_syn_pending, /**< inbound SYN received (and queued). */
+   nat_conn_connected /**< SYNs sent in both directions. Connection established. */
+} sr_nat_tcp_conn_state_t;
+
 typedef struct sr_nat_connection
 {
    /* add TCP connection state data members here */
-
+   sr_nat_tcp_conn_state_t connectionState;
    struct sr_nat_connection *next;
 } sr_nat_connection_t;
 
@@ -49,6 +58,11 @@ typedef struct sr_nat_mapping
    struct sr_nat_connection *conns; /* list of connections. null for ICMP */
    struct sr_nat_mapping *next;
 } sr_nat_mapping_t;
+
+typedef struct
+{
+   sr_nat_tcp_conn_state_t connectionState;
+} sr_nat_pending_tcp_conn_t;
 
 typedef struct sr_nat
 {

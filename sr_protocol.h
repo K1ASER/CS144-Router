@@ -245,6 +245,15 @@ typedef struct __attribute__((packed))
    uint16_t urgentPointer; /**< current value of the urgent pointer as a positive offset from the sequence number in this segment. */
 } sr_tcp_hdr_t;
 
+typedef struct __attribute__((packed))
+{
+   uint32_t sourceAddress; /**< The source address of the IP datagram */
+   uint32_t destinationAddress; /**< The destination address of the IP datagram */
+   uint8_t zeros; /**< A byte of 0 */
+   uint8_t protocol; /**< IP Protocol field (should be ip_protocol_tcp) */
+   uint16_t tcpLength; /**< Length of the TCP packet */
+} sr_tcp_ip_pseudo_hdr_t;
+
 /**
  * @brief Header structure for a user datagram protocol (UDP) packet header.
  * @see http://tools.ietf.org/html/rfc768
