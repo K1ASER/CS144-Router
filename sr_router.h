@@ -12,10 +12,12 @@
 #include <netinet/in.h>
 #include <sys/time.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 #include "sr_protocol.h"
 #include "sr_arpcache.h"
 #include "sr_nat.h"
+#include "sr_rt.h"
 
 /* we dont like this debug , but what to do for varargs ? */
 #ifdef _DEBUG_
@@ -33,7 +35,6 @@
 
 /* forward declare */
 struct sr_if;
-struct sr_rt;
 
 /* ----------------------------------------------------------------------------
  * struct sr_instance
@@ -58,6 +59,18 @@ typedef struct sr_instance
    struct sr_nat* nat; /**< Pointer to NAT state structure. */
 } sr_instance_t;
 
+/**
+ * getIpHeaderLength()\n
+ * IP Stack Level: Network Layer (IP)\n
+ * @brief Gets the length (in bytes) of an IP datagram.
+ * @param pktPtr pointer packet IP header.
+ * @return size of datagram (in bytes).
+ */
+static inline uint16_t getIpHeaderLength(sr_ip_hdr_t const * const pktPtr)
+{
+   return (pktPtr->ip_hl) * 4;
+}
+
 /* -- sr_main.c -- */
 int sr_verify_routing_table(struct sr_instance* sr);
 
@@ -70,8 +83,19 @@ int sr_read_from_server(struct sr_instance*);
 void sr_init(struct sr_instance*);
 void sr_handlepacket(struct sr_instance*, uint8_t *, unsigned int, char*);
 void LinkSendArpRequest(struct sr_instance* sr, struct sr_arpreq* request);
-void NetworkSendTypeThreeIcmpPacket(struct sr_instance* sr, sr_icmp_code_t icmpCode,
+void IpSendTypeThreeIcmpPacket(struct sr_instance* sr, sr_icmp_code_t icmpCode,
    sr_ip_hdr_t* originalPacketPtr);
+void IpHandleReceivedPacketToUs(struct sr_instance* sr, sr_ip_hdr_t* packet,
+   unsigned int length, sr_if_t const * const interface);
+sr_rt_t* IpGetPacketRoute(struct sr_instance* sr, in_addr_t destIp);
+void IpForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, unsigned int length,
+   const struct sr_if* const receivedInterface);
+bool IpDestinationIsUs(struct sr_instance* sr, const sr_ip_hdr_t* const packet);
+bool IcmpPerformIntegrityCheck(sr_icmp_hdr_t * const icmpPacket, unsigned int length);
+bool TcpPerformIntegrityCheck(sr_ip_hdr_t * const tcpPacket, unsigned int length);
+
+/* -- sr_nat.c -- */
+void NatHandleRecievedIpPacket(sr_instance_t*, sr_ip_hdr_t*, unsigned int, sr_if_t const * const);
 
 /* -- sr_if.c -- */
 void sr_add_interface(struct sr_instance*, const char*);

@@ -43,7 +43,7 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr)
          for (packetIterator = requestIterator->packets; packetIterator != NULL; packetIterator =
             packetIterator->next)
          {
-            NetworkSendTypeThreeIcmpPacket(sr, icmp_code_destination_host_unreachable,
+            IpSendTypeThreeIcmpPacket(sr, icmp_code_destination_host_unreachable,
                (sr_ip_hdr_t*) (packetIterator->buf + sizeof(sr_ethernet_hdr_t)));
             
             /* We do not have to free all memory associated with this packet. 
