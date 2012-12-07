@@ -113,6 +113,10 @@ typedef struct __attribute__((packed))
    uint8_t data[1]; /**< Variable length data sent with request/reply */
 } sr_icmp_t0_hdr_t, sr_icmp_t8_hdr_t;
 
+/**
+ * @brief Header structure for a Type 11 (Time Exceeded) ICMP packet.
+ * @see http://www.ietf.org/rfc/rfc0792.txt
+ */
 typedef struct __attribute__((packed))
 {  
    uint8_t icmp_type; /**< ICMP Type (should be 11) */

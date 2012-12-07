@@ -14,6 +14,8 @@
 #include <time.h>
 #include <pthread.h>
 
+#include "sr_protocol.h"
+
 /*
  * Public Defines & Macros
  */
@@ -27,6 +29,9 @@
  * Public Types
  */
 
+struct sr_instance;
+struct sr_if;
+
 typedef enum
 {
    nat_mapping_icmp, nat_mapping_tcp
@@ -37,13 +42,19 @@ typedef enum
 {
    nat_conn_outbound_syn, /**< outbound SYN sent. */
    nat_conn_inbound_syn_pending, /**< inbound SYN received (and queued). */
-   nat_conn_connected /**< SYNs sent in both directions. Connection established. */
+   nat_conn_connected, /**< SYNs sent in both directions. Connection established. */
+   nat_conn_saw_fin
 } sr_nat_tcp_conn_state_t;
 
 typedef struct sr_nat_connection
 {
    /* add TCP connection state data members here */
    sr_nat_tcp_conn_state_t connectionState;
+   
+   sr_ip_hdr_t * inboundSynpacket;
+   unsigned int inboundSynLength;
+   struct sr_if * synReceivedInterface;
+   
    struct sr_nat_connection *next;
 } sr_nat_connection_t;
 
@@ -68,6 +79,7 @@ typedef struct sr_nat
 {
    /* add any fields here */
    struct sr_nat_mapping *mappings;
+   struct sr_instance * routerState;
    
    uint16_t nextTcpPortNumber;
    uint16_t nextIcmpIdentNumber;

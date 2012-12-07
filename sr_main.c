@@ -257,6 +257,7 @@ int main(int argc, char **argv)
       
       sr_nat_init(sr.nat);
       
+      sr.nat->routerState = &sr;
       sr.nat->icmpTimeout = cmdArgs.icmpQueryTimeout;
       sr.nat->tcpEstablishedTimeout = cmdArgs.tcpEstablishedTimeout;
       sr.nat->tcpTransitoryTimeout = cmdArgs.tcpTransitioryTimeout;

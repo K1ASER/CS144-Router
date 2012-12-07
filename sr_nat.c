@@ -57,6 +57,8 @@ static sr_nat_mapping_t * natTrustedLookupInternal(sr_nat_t *nat, uint32_t ip_in
    sr_nat_mapping_type type);
 static sr_nat_mapping_t * natTrustedLookupExternal(sr_nat_t * nat, uint16_t aux_ext,
    sr_nat_mapping_type type);
+static sr_nat_mapping_t * natTrustedCreateMapping(sr_nat_t *nat, uint32_t ip_int, uint16_t aux_int,
+   sr_nat_mapping_type type);
 
 static void natRecalculateTcpChecksum(sr_ip_hdr_t * tcpPacket, unsigned int length);
 
@@ -137,29 +139,58 @@ void *sr_nat_timeout(void *nat_ptr)
                
             case nat_mapping_tcp:
             {
-               unsigned int connectionTimeout;
                if (mappingWalker->conns->connectionState == nat_conn_connected)
                {
-                  connectionTimeout = nat->tcpEstablishedTimeout;
+                  if (difftime(curtime, mappingWalker->last_updated) > nat->tcpEstablishedTimeout)
+                  {
+                     sr_nat_mapping_t * next = mappingWalker->next;
+                     LOG_MESSAGE("TCP mapping from %u.%u.%u.%u:%u to %u timed out.\n",
+                        (mappingWalker->ip_int >> 24) & 0xFF, (mappingWalker->ip_int >> 16) & 0xFF,
+                        (mappingWalker->ip_int >> 8) & 0xFF, mappingWalker->ip_int & 0xFF,
+                        mappingWalker->aux_int, mappingWalker->aux_ext);
+                     sr_nat_destroy_mapping(nat, mappingWalker);
+                     mappingWalker = next;
+                  }
+                  else
+                  {
+                     mappingWalker = mappingWalker->next;
+                  }
                }
-               else if (mappingWalker->conns->connectionState == nat_conn_outbound_syn)
+               else if ((mappingWalker->conns->connectionState == nat_conn_outbound_syn)
+                  || (mappingWalker->conns->connectionState == nat_conn_saw_fin))
                {
-                  connectionTimeout = nat->tcpTransitoryTimeout;
+                  if (difftime(curtime, mappingWalker->last_updated) > nat->tcpTransitoryTimeout)
+                  {
+                     sr_nat_mapping_t * next = mappingWalker->next;
+                     LOG_MESSAGE("Transitory TCP mapping from %u.%u.%u.%u:%u to %u timed out.\n",
+                        (mappingWalker->ip_int >> 24) & 0xFF, (mappingWalker->ip_int >> 16) & 0xFF,
+                        (mappingWalker->ip_int >> 8) & 0xFF, mappingWalker->ip_int & 0xFF,
+                        mappingWalker->aux_int, mappingWalker->aux_ext);
+                     sr_nat_destroy_mapping(nat, mappingWalker);
+                     mappingWalker = next;
+                  }
+                  else
+                  {
+                     mappingWalker = mappingWalker->next;
+                  }
                }
                else if (mappingWalker->conns->connectionState == nat_conn_inbound_syn_pending)
                {
-                  connectionTimeout = SIM_OPEN_INBOUND_TIMEOUT;
-               }
-               
-               if (difftime(curtime, mappingWalker->last_updated) > connectionTimeout)
-               {
-                  sr_nat_mapping_t* next = mappingWalker->next;
-                  LOG_MESSAGE("TCP mapping from %u.%u.%u.%u:%u to %u timed out.\n", 
-                     (mappingWalker->ip_int >> 24) & 0xFF, (mappingWalker->ip_int >> 16) & 0xFF, 
-                     (mappingWalker->ip_int >> 8) & 0xFF, mappingWalker->ip_int & 0xFF, 
-                     mappingWalker->aux_int, mappingWalker->aux_ext);
-                  sr_nat_destroy_mapping(nat, mappingWalker);
-                  mappingWalker = next;
+                  if (difftime(curtime, mappingWalker->last_updated) > SIM_OPEN_INBOUND_TIMEOUT)
+                  {
+                     sr_nat_mapping_t * next = mappingWalker->next;
+                     LOG_MESSAGE("TCP mapping from %u.%u.%u.%u:%u to %u timed out.\n",
+                        (mappingWalker->ip_int >> 24) & 0xFF, (mappingWalker->ip_int >> 16) & 0xFF,
+                        (mappingWalker->ip_int >> 8) & 0xFF, mappingWalker->ip_int & 0xFF,
+                        mappingWalker->aux_int, mappingWalker->aux_ext);
+                     //IpSendTypeThreeIcmpPacket(nat->routerState, icmp_code_destination_host_unreachable, );
+                     sr_nat_destroy_mapping(nat, mappingWalker);
+                     mappingWalker = next;
+                  }
+                  else
+                  {
+                     mappingWalker = mappingWalker->next;
+                  }
                }
                else
                {
@@ -265,14 +296,35 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    pthread_mutex_lock(&(nat->lock));
    
    /* handle insert here, create a mapping, and then return a copy of it */
-   struct sr_nat_mapping *mapping = malloc(sizeof(sr_nat_mapping_t));
+   struct sr_nat_mapping *mapping = natTrustedCreateMapping(nat, ip_int, aux_int, type);
    struct sr_nat_mapping *copy = malloc(sizeof(sr_nat_mapping_t));
    
    if (type == nat_mapping_icmp)
    {
       LOG_MESSAGE("Creating ICMP mapping from %u.%u.%u.%u:%u to %u\n", (ip_int >> 24) & 0xFF, 
-         (ip_int >> 16) & 0xFF, (ip_int >> 8) & 0xFF, ip_int & 0xFF, aux_int, nat->nextIcmpIdentNumber);
+         (ip_int >> 16) & 0xFF, (ip_int >> 8) & 0xFF, ip_int & 0xFF, aux_int, mapping->aux_ext);
+   }
+   else if (type == nat_mapping_tcp)
+   {
+      LOG_MESSAGE("Creating TCP mapping from %u.%u.%u.%u:%u to %u\n", (ip_int >> 24) & 0xFF, 
+         (ip_int >> 16) & 0xFF, (ip_int >> 8) & 0xFF, ip_int & 0xFF, aux_int, mapping->aux_ext);
+   }
+   
+   memcpy(copy, mapping, sizeof(sr_nat_mapping_t));
+   
+   pthread_mutex_unlock(&(nat->lock));
+   return copy;
+}
+
+static sr_nat_mapping_t * natTrustedCreateMapping(sr_nat_t *nat, uint32_t ip_int, uint16_t aux_int,
+   sr_nat_mapping_type type)
+{
+   struct sr_nat_mapping *mapping = malloc(sizeof(sr_nat_mapping_t));
+   
+   if (type == nat_mapping_icmp)
+   {
       mapping->aux_ext = nat->nextIcmpIdentNumber;
+      mapping->conns = NULL;
       if (++nat->nextIcmpIdentNumber > LAST_PORT_NUMBER)
       {
          /* TODO: Point of improvement. We should really check if the port 
@@ -287,8 +339,6 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
       sr_nat_connection_t * firstConnection = malloc(sizeof(sr_nat_connection_t));
       assert(firstConnection);
       
-      LOG_MESSAGE("Creating TCP mapping from %u.%u.%u.%u:%u to %u\n", (ip_int >> 24) & 0xFF, 
-         (ip_int >> 16) & 0xFF, (ip_int >> 8) & 0xFF, ip_int & 0xFF, aux_int, nat->nextTcpPortNumber);
       mapping->aux_ext = nat->nextTcpPortNumber;
       
       firstConnection->connectionState = nat_conn_outbound_syn;
@@ -315,10 +365,7 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat, uint32_t ip_int
    mapping->next = nat->mappings;
    nat->mappings = mapping;
    
-   memcpy(copy, mapping, sizeof(sr_nat_mapping_t));
-   
-   pthread_mutex_unlock(&(nat->lock));
-   return copy;
+   return mapping;
 }
 
 /**
@@ -353,17 +400,22 @@ static void sr_nat_destroy_mapping(sr_nat_t* nat, sr_nat_mapping_t* natMapping)
          prev = req;
       }
       
+      if (natMapping->conns != NULL )
+      {
+         free(natMapping->conns);
+      }
+      
       free(natMapping);
    }
 }
 
 /**
  * NatHandleRecievedIpPacket()\n
- * @brief 
- * @param sr
- * @param ipPacket
- * @param length
- * @param receivedInterface
+ * @brief Called by router program when an IP packet is received and NAT functionality is enabled.
+ * @param sr pointer to simple router struct.
+ * @param ipPacket pointer to received packet.
+ * @param length length of IP packet
+ * @param receivedInterface pointer to the interface on which the packet was received.
  */
 void NatHandleRecievedIpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigned int length, sr_if_t const * const receivedInterface)
 {
@@ -396,6 +448,14 @@ void NatHandleRecievedIpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigne
    free(natLookupResult);
 }
 
+/**
+ * NatUndoPacketMapping()\n
+ * @brief Called by the router code when an IP datagram needs its NAT translation undone (like when TTL is exceeded).
+ * @param sr pointer to simple router struct.
+ * @param mutatedPacket pointer to previously mutated IP datagram
+ * @param length length of IP datagram.
+ * @param receivedInterface pointer on which the mutated packet was originally received.
+ */
 void NatUndoPacketMapping(sr_instance_t* sr, sr_ip_hdr_t* mutatedPacket, unsigned int length, 
    sr_if_t const * const receivedInterface)
 {
@@ -458,8 +518,9 @@ void NatUndoPacketMapping(sr_instance_t* sr, sr_ip_hdr_t* mutatedPacket, unsigne
                IpGetPacketRoute(sr, mutatedPacket->ip_src)->interface)->ip;
             mutatedPacket->ip_sum = 0;
             mutatedPacket->ip_sum = cksum(mutatedPacket, getIpHeaderLength(mutatedPacket));
+            
+            free(natMap);
          }
-         free(natMap);
       }
       else if (mutatedPacket->ip_p == ip_protocol_tcp)
       {
@@ -477,6 +538,8 @@ void NatUndoPacketMapping(sr_instance_t* sr, sr_ip_hdr_t* mutatedPacket, unsigne
             
             mutatedPacket->ip_sum = 0;
             mutatedPacket->ip_sum = cksum(mutatedPacket, getIpHeaderLength(mutatedPacket));
+            
+            free(natMap);
          }
       }
    }
@@ -689,12 +752,26 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
             /* The packet is an outbound SYN. Make a mapping. */
             natLookupResult = sr_nat_insert_mapping(sr->nat, ntohl(packet->ip_src),
                ntohs(tcpHdr->sourcePort), nat_mapping_tcp);
-         }  
+         }
+         else if ((natLookupResult->conns->connectionState != nat_conn_connected) 
+            && (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M))
+         {
+            if (natLookupResult->conns->connectionState == nat_conn_inbound_syn_pending)
+            {
+               /* Simulataneous open successful */
+            }
+            else if (natLookupResult->conns->connectionState == nat_conn_saw_fin)
+            {
+               natLookupResult->conns->connectionState = nat_conn_outbound_syn;
+            }
+         }
 
          if (associatedMapping != NULL )
          {
             memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
          }
+         free(natLookupResult);
+         
          return NAT_PACKET_OUTBOUND;
       }
       else if (packet->ip_p == ip_protocol_icmp)
@@ -720,15 +797,36 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
              * payload. */
             sr_ip_hdr_t * const errorPacket =
                (sr_ip_hdr_t * const ) icmpUnreachHdr->data;
-            sr_tcp_hdr_t * const errorTcpHdr =
-               (sr_tcp_hdr_t * const ) (((uint8_t*) errorPacket)
-                  + getIpHeaderLength(errorPacket));
             
             if (errorPacket->ip_p == ip_protocol_tcp)
             {
-               /* TODO: COPY PASTA */
+               sr_tcp_hdr_t * const errorTcpHdr = (sr_tcp_hdr_t * const ) (((uint8_t*) errorPacket)
+                  + getIpHeaderLength(errorPacket));
                natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(errorTcpHdr->sourcePort),
                   nat_mapping_tcp);
+               if (natLookupResult != NULL)
+               {
+                  /* Hmm...seems like an okay mapping. */
+                  if (associatedMapping != NULL)
+                  {
+                     memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
+                  }
+                  free(natLookupResult);
+                  
+                  return NAT_PACKET_INBOUND;
+               }
+               else
+               {
+                  /* No associated mapping. Drop it like it's hot! */
+                  return NAT_PACKET_DROP;
+               }
+            }
+            else if (errorPacket->ip_p == ip_protocol_icmp)
+            {
+               sr_icmp_t0_hdr_t * const errorIcmpHdr = (sr_icmp_t0_hdr_t * const ) (((uint8_t*) errorPacket)
+                  + getIpHeaderLength(errorPacket));
+               natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(errorIcmpHdr->ident),
+                  nat_mapping_icmp);
                if (natLookupResult != NULL)
                {
                   /* Hmm...seems like an okay mapping. */
@@ -777,7 +875,7 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
          }
          else
          {
-            /* To hell with best effort. */
+            /* Non-required ICMP message type. To hell with best effort. */
             return NAT_PACKET_DROP;
          }
       }
@@ -791,6 +889,9 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
    {
       if (!IpDestinationIsUs(sr, packet))
       {
+         /* If an external host wants to traverse the NAT, it would have sent 
+          * the packet to us! Assume we are supposed to act like a router and 
+          * forward to another external interface. */
          return NAT_PACKET_DEFLECTION;
       }
       
@@ -895,12 +996,15 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
             nat_mapping_tcp);
          if (natLookupResult != NULL)
          {
-            if ((natLookupResult->conns->connectionState != nat_conn_connected) && (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M))
+            if ((natLookupResult->conns->connectionState != nat_conn_connected) 
+               && (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M))
             {
                if (natLookupResult->conns->connectionState == nat_conn_outbound_syn)
                {
-                  LOG_MESSAGE("Mapping from %u.%u.%u.%u:%u to %u now connected.\n", (natLookupResult->ip_int >> 24) & 0xFF, 
-                     (natLookupResult->ip_int >> 16) & 0xFF, (natLookupResult->ip_int >> 8) & 0xFF, natLookupResult->ip_int & 0xFF, natLookupResult->aux_int, natLookupResult->aux_ext);
+                  LOG_MESSAGE("Mapping from %u.%u.%u.%u:%u to %u now connected.\n", 
+                     (natLookupResult->ip_int >> 24) & 0xFF, (natLookupResult->ip_int >> 16) & 0xFF, 
+                     (natLookupResult->ip_int >> 8) & 0xFF, natLookupResult->ip_int & 0xFF, 
+                     natLookupResult->aux_int, natLookupResult->aux_ext);
                   natLookupResult->conns->connectionState = nat_conn_connected;
                }
             }
@@ -912,6 +1016,13 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
             }
             
             pthread_mutex_unlock(&(sr->nat->lock));
+            return NAT_PACKET_INBOUND;
+         }
+         else if (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M)
+         {
+            /* Assume external client is attempting a simultaneous open. */
+            natLookupResult = natTrustedCreateMapping(sr->nat, 0, ntohs(tcpHdr->destinationPort), nat_mapping_tcp);
+            natLookupResult->ip_ext = ntohl(packet->ip_src);
             return NAT_PACKET_INBOUND;
          }
          else
