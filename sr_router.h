@@ -96,6 +96,7 @@ bool TcpPerformIntegrityCheck(sr_ip_hdr_t * const tcpPacket, unsigned int length
 
 /* -- sr_nat.c -- */
 void NatHandleRecievedIpPacket(sr_instance_t*, sr_ip_hdr_t*, unsigned int, sr_if_t const * const);
+void NatUndoPacketMapping(sr_instance_t*, sr_ip_hdr_t*, unsigned int, sr_if_t const * const);
 
 /* -- sr_if.c -- */
 void sr_add_interface(struct sr_instance*, const char*);

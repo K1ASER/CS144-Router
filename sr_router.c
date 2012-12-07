@@ -668,6 +668,11 @@ static void networkSendIcmpTtlExpired(struct sr_instance* sr, sr_ip_hdr_t* origi
    sr_icmp_t3_hdr_t* replyIcmpHeader = (sr_icmp_t3_hdr_t*) ((uint8_t*) replyIpHeader
       + sizeof(sr_ip_hdr_t));
    
+   if (natEnabled(sr))
+   {
+      NatUndoPacketMapping(sr, originalPacket, length, receivedInterface);
+   }
+   
    LOG_MESSAGE("TTL expired on received packet. Sending an ICMP time exceeded.\n");
    
    /* Fill in IP header */

@@ -396,6 +396,92 @@ void NatHandleRecievedIpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigne
    free(natLookupResult);
 }
 
+void NatUndoPacketMapping(sr_instance_t* sr, sr_ip_hdr_t* mutatedPacket, unsigned int length, 
+   sr_if_t const * const receivedInterface)
+{
+   sr_nat_mapping_t * natMap;
+   if (getInternalInterface(sr)->ip == receivedInterface->ip)
+   {
+      /* Undo an outbound conversion. */
+      if (mutatedPacket->ip_p == ip_protocol_icmp)
+      {
+         sr_icmp_t0_hdr_t * icmpHeader = (sr_icmp_t0_hdr_t *) (((uint8_t *) mutatedPacket)
+            + getIpHeaderLength(mutatedPacket));
+         natMap = sr_nat_lookup_external(sr->nat, ntohs(icmpHeader->ident), nat_mapping_icmp);
+         if (natMap != NULL)
+         {
+            icmpHeader->ident = htons(natMap->aux_int);
+            icmpHeader->icmp_sum = 0;
+            icmpHeader->icmp_sum = cksum(icmpHeader, length - getIpHeaderLength(mutatedPacket));
+            
+            mutatedPacket->ip_src = htonl(natMap->ip_int);
+            mutatedPacket->ip_sum = 0;
+            mutatedPacket->ip_sum = cksum(mutatedPacket, getIpHeaderLength(mutatedPacket));
+         }
+         free(natMap);
+      }
+      else if (mutatedPacket->ip_p == ip_protocol_tcp)
+      {
+         sr_tcp_hdr_t * tcpHeader = (sr_tcp_hdr_t *) (((uint8_t *) mutatedPacket)
+            + getIpHeaderLength(mutatedPacket));
+         natMap = sr_nat_lookup_external(sr->nat, ntohs(tcpHeader->sourcePort), nat_mapping_icmp);
+         if (natMap != NULL)
+         {
+            tcpHeader->sourcePort = htons(natMap->aux_int);
+            mutatedPacket->ip_src = htonl(natMap->ip_int);
+            
+            natRecalculateTcpChecksum(mutatedPacket, length);
+            
+            mutatedPacket->ip_sum = 0;
+            mutatedPacket->ip_sum = cksum(mutatedPacket, getIpHeaderLength(mutatedPacket));
+         }
+         free(natMap);
+      }
+   }
+   else
+   {
+      /* Undo an potential inbound conversion. If the lookup fails, we can 
+       * assume this packet did not cross through the NAT. */
+      if (mutatedPacket->ip_p == ip_protocol_icmp)
+      {
+         sr_icmp_t0_hdr_t * icmpHeader = (sr_icmp_t0_hdr_t *) (((uint8_t *) mutatedPacket)
+            + getIpHeaderLength(mutatedPacket));
+         natMap = sr_nat_lookup_internal(sr->nat, ntohl(mutatedPacket->ip_dst), 
+            ntohs(icmpHeader->ident), nat_mapping_icmp);
+         if (natMap != NULL)
+         {
+            icmpHeader->ident = htons(natMap->aux_ext);
+            icmpHeader->icmp_sum = 0;
+            icmpHeader->icmp_sum = cksum(icmpHeader, length - getIpHeaderLength(mutatedPacket));
+            
+            mutatedPacket->ip_dst = sr_get_interface(sr,
+               IpGetPacketRoute(sr, mutatedPacket->ip_src)->interface)->ip;
+            mutatedPacket->ip_sum = 0;
+            mutatedPacket->ip_sum = cksum(mutatedPacket, getIpHeaderLength(mutatedPacket));
+         }
+         free(natMap);
+      }
+      else if (mutatedPacket->ip_p == ip_protocol_tcp)
+      {
+         sr_tcp_hdr_t * tcpHeader = (sr_tcp_hdr_t *) (((uint8_t *) mutatedPacket)
+            + getIpHeaderLength(mutatedPacket));
+         natMap = sr_nat_lookup_internal(sr->nat, ntohl(mutatedPacket->ip_dst), 
+            ntohs(tcpHeader->destinationPort), nat_mapping_icmp);
+         if (natMap != NULL)
+         {
+            tcpHeader->destinationPort = htons(natMap->aux_ext);
+            mutatedPacket->ip_dst = sr_get_interface(sr,
+               IpGetPacketRoute(sr, mutatedPacket->ip_src)->interface)->ip;
+            
+            natRecalculateTcpChecksum(mutatedPacket, length);
+            
+            mutatedPacket->ip_sum = 0;
+            mutatedPacket->ip_sum = cksum(mutatedPacket, getIpHeaderLength(mutatedPacket));
+         }
+      }
+   }
+}
+
 static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
    unsigned int length, const struct sr_if* const receivedInterface, sr_nat_mapping_t * natMapping)
 {
@@ -454,8 +540,6 @@ static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t
    {
       sr_icmp_hdr_t *icmpPacketHeader = (sr_icmp_hdr_t *) (((uint8_t*) packet)
          + getIpHeaderLength(packet));
-      
-      /* TODO: Packet integrity */
       
       if ((icmpPacketHeader->icmp_type == icmp_type_echo_request)
          || (icmpPacketHeader->icmp_type == icmp_type_echo_reply))
@@ -528,7 +612,7 @@ static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t
          else if (natMapping->type == nat_mapping_icmp)
          {
             /* T0 & T8 are the only types of ICMP messages that can generate 
-             * an ICMP packet in response. */
+             * an TTL Exceeded packet in response. */
             sr_icmp_t0_hdr_t *originalTransportHeader =
                (sr_icmp_t0_hdr_t *) (((uint8_t*) icmpPacketHeader) + getIpHeaderLength(packet));
             
