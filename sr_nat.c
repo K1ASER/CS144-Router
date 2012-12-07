@@ -23,6 +23,7 @@ typedef enum
    NAT_PACKET_INBOUND,
    NAT_PACKET_OUTBOUND,
    NAT_PACKET_FOR_ROUTER,
+   NAT_PACKET_DEFLECTION,
    NAT_PACKET_DROP
 } NatDestinationResult_t;
 
@@ -383,6 +384,10 @@ void NatHandleRecievedIpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigne
          IpHandleReceivedPacketToUs(sr, ipPacket, length, receivedInterface);
          break;
          
+      case NAT_PACKET_DEFLECTION:
+         IpForwardIpPacket(sr, ipPacket, length, receivedInterface);
+         break;
+         
       case NAT_PACKET_DROP:
       default:
          LOG_MESSAGE("Received IP packet was unable to traverse NAT.\n");
@@ -470,9 +475,75 @@ static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t
          
          IpForwardIpPacket(sr, packet, length, receivedInterface);
       }
-      else
+      else if (icmpPacketHeader->icmp_type == icmp_type_desination_unreachable)
       {
          /* This packet is actually associated with a stream. */
+         sr_icmp_t3_hdr_t *unreachablePacketHeader = (sr_icmp_t3_hdr_t *) icmpPacketHeader;
+         int icmpLength = length - getIpHeaderLength(packet);
+         sr_ip_hdr_t *originalDatagram = (sr_ip_hdr_t*) (unreachablePacketHeader->data);
+         sr_tcp_hdr_t *originalTransportHeader = (sr_tcp_hdr_t*) (((uint8_t*) icmpPacketHeader)
+            + getIpHeaderLength(packet));
+         
+         assert(natMapping);
+         assert(originalDatagram->ip_p == ip_protocol_tcp);
+         
+         /* Perform mapping on embedded payload */
+         originalTransportHeader->sourcePort = htons(natMapping->ip_int);
+         originalDatagram->ip_src = htonl(natMapping->ip_int);
+         
+         /* Update ICMP checksum */
+         unreachablePacketHeader->icmp_sum = 0;
+         unreachablePacketHeader->icmp_sum = cksum(unreachablePacketHeader, icmpLength);
+         
+         /* Rewrite actual packet header. */
+         packet->ip_dst = htonl(natMapping->ip_int);
+         
+         IpForwardIpPacket(sr, packet, length, receivedInterface);
+      }
+      else if (icmpPacketHeader->icmp_type == icmp_type_time_exceeded)
+      {
+         /* This packet is actually associated with a stream. */
+         sr_icmp_t11_hdr_t *exceededPacketHeader = (sr_icmp_t11_hdr_t *) icmpPacketHeader;
+         int icmpLength = length - getIpHeaderLength(packet);
+         sr_ip_hdr_t *originalDatagram = (sr_ip_hdr_t*) (exceededPacketHeader->data);
+         
+         assert(natMapping);
+         
+         if (natMapping->type == nat_mapping_tcp)
+         {
+            sr_tcp_hdr_t *originalTransportHeader = (sr_tcp_hdr_t*) (((uint8_t*) icmpPacketHeader)
+               + getIpHeaderLength(packet));
+            
+            /* Perform mapping on embedded payload */
+            originalTransportHeader->sourcePort = htons(natMapping->ip_int);
+            originalDatagram->ip_src = htonl(natMapping->ip_int);
+            
+            /* Update ICMP checksum */
+            exceededPacketHeader->icmp_sum = 0;
+            exceededPacketHeader->icmp_sum = cksum(exceededPacketHeader, icmpLength);
+            
+            /* Rewrite actual packet header. */
+            packet->ip_dst = htonl(natMapping->ip_int);
+         }
+         else if (natMapping->type == nat_mapping_icmp)
+         {
+            /* T0 & T8 are the only types of ICMP messages that can generate 
+             * an ICMP packet in response. */
+            sr_icmp_t0_hdr_t *originalTransportHeader =
+               (sr_icmp_t0_hdr_t *) (((uint8_t*) icmpPacketHeader) + getIpHeaderLength(packet));
+            
+            /* Perform mapping on embedded payload */
+            originalTransportHeader->ident = htons(natMapping->aux_int);
+            
+            /* Handle IP address remap */
+            packet->ip_dst = htonl(natMapping->ip_int);
+         }
+         else
+         {
+            return;
+         }
+         
+         IpForwardIpPacket(sr, packet, length, receivedInterface);
       }
    }
    else if (packet->ip_p == ip_protocol_tcp)
@@ -501,6 +572,7 @@ static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t
  * @return NAT_PACKET_DROP if the packet should be dropped (bad checksum, unsupported protocol, etc.)
  * @return NAT_PACKET_OUTBOUND if the packet is traversing the NAT from internal -> external.
  * @return NAT_PACKET_INBOUND if the packet is traversing the NAT from external -> internal.
+ * @return NAT_PACKET_DEFLECTION if the packet is not traversing the NAT (external -> external).
  */
 static NatDestinationResult_t natPacketDestination(sr_instance_t * sr, 
    sr_ip_hdr_t * const packet, unsigned int length, sr_if_t const * const receivedInterface,
@@ -633,6 +705,11 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
    }
    else
    {
+      if (!IpDestinationIsUs(sr, packet))
+      {
+         return NAT_PACKET_DEFLECTION;
+      }
+      
       if (packet->ip_p == ip_protocol_icmp)
       {
          sr_icmp_hdr_t * const icmpHdr = (sr_icmp_hdr_t * const ) (((uint8_t*) packet)

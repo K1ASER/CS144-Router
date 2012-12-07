@@ -732,7 +732,7 @@ void IpForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
     * decision to forward onto the interface we received the packet or 
     * couldn't make a decision, something is wrong. Send a host 
     * unreachable if this is the case. */
-   if ((forwardRoute != NULL) && (strcmp(forwardRoute->interface, receivedInterface->name) != 0))
+   if (forwardRoute != NULL)
    {
       /* We found a viable route. Forward to it! */
       uint8_t* forwardPacket = malloc(length + sizeof(sr_ethernet_hdr_t));
@@ -757,7 +757,7 @@ void IpForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
 }
 
 /**
- * networkGetPacketRoute()\n
+ * IpGetPacketRoute()\n
  * IP Stack Level: Network (IP)\n
  * @brief Function gets the longest prefix match route for a provided destination IP address.
  * @param sr pointer to simple router structure.

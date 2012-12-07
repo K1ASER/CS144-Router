@@ -113,6 +113,15 @@ typedef struct __attribute__((packed))
    uint8_t data[1]; /**< Variable length data sent with request/reply */
 } sr_icmp_t0_hdr_t, sr_icmp_t8_hdr_t;
 
+typedef struct __attribute__((packed))
+{  
+   uint8_t icmp_type; /**< ICMP Type (should be 11) */
+   uint8_t icmp_code; /**< ICMP Code */
+   uint16_t icmp_sum; /**< ICMP checksum (covers entire payload) */
+   uint16_t unused; /**< unused */
+   uint8_t data[1]; /**< Variable length data containing IP datagram and first 8 bytes of transport. */
+} sr_icmp_t11_hdr_t;
+
 
 /*
  * Structure of an internet header, naked of options.
