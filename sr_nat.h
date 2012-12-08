@@ -43,7 +43,7 @@ typedef enum
    nat_conn_outbound_syn, /**< outbound SYN sent. */
    nat_conn_inbound_syn_pending, /**< inbound SYN received (and queued). */
    nat_conn_connected, /**< SYNs sent in both directions. Connection established. */
-   nat_conn_saw_fin
+   nat_conn_time_wait /**< One of the endpoints has sent a FIN. */
 } sr_nat_tcp_conn_state_t;
 
 typedef struct sr_nat_connection
@@ -51,9 +51,19 @@ typedef struct sr_nat_connection
    /* add TCP connection state data members here */
    sr_nat_tcp_conn_state_t connectionState;
    
-   sr_ip_hdr_t * inboundSynpacket;
-   unsigned int inboundSynLength;
-   struct sr_if * synReceivedInterface;
+#if 0
+   /* Internal not needed (implied by parent NAT mapping. */
+   struct
+   {
+      uint32_t ipAddress;
+      uint16_t portNumber;
+   } internal;
+#endif
+   struct
+   {
+      uint32_t ipAddress;
+      uint16_t portNumber;
+   } external;
    
    struct sr_nat_connection *next;
 } sr_nat_connection_t;

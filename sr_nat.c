@@ -53,12 +53,19 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
    sr_ip_hdr_t * const packet, unsigned int length, sr_if_t const * const receivedInterface, 
    sr_nat_mapping_t * associatedMapping);
 
+static void natHandleTcpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigned int length,
+   sr_if_t const * const receivedInterface);
+static void natHandleIcmpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigned int length,
+   sr_if_t const * const receivedInterface);
+
 static sr_nat_mapping_t * natTrustedLookupInternal(sr_nat_t *nat, uint32_t ip_int, uint16_t aux_int,
    sr_nat_mapping_type type);
 static sr_nat_mapping_t * natTrustedLookupExternal(sr_nat_t * nat, uint16_t aux_ext,
    sr_nat_mapping_type type);
 static sr_nat_mapping_t * natTrustedCreateMapping(sr_nat_t *nat, uint32_t ip_int, uint16_t aux_int,
    sr_nat_mapping_type type);
+static sr_nat_connection_t * natTrustedFindConnection(sr_nat_mapping_t *natEntry, uint32_t ip_ext, 
+   uint16_t port_ext);
 
 static void natRecalculateTcpChecksum(sr_ip_hdr_t * tcpPacket, unsigned int length);
 
@@ -157,7 +164,7 @@ void *sr_nat_timeout(void *nat_ptr)
                   }
                }
                else if ((mappingWalker->conns->connectionState == nat_conn_outbound_syn)
-                  || (mappingWalker->conns->connectionState == nat_conn_saw_fin))
+                  || (mappingWalker->conns->connectionState == nat_conn_time_wait))
                {
                   if (difftime(curtime, mappingWalker->last_updated) > nat->tcpTransitoryTimeout)
                   {
@@ -323,7 +330,7 @@ static sr_nat_mapping_t * natTrustedCreateMapping(sr_nat_t *nat, uint32_t ip_int
    
    if (type == nat_mapping_icmp)
    {
-      mapping->aux_ext = nat->nextIcmpIdentNumber;
+      mapping->aux_ext = htons(nat->nextIcmpIdentNumber);
       mapping->conns = NULL;
       if (++nat->nextIcmpIdentNumber > LAST_PORT_NUMBER)
       {
@@ -336,15 +343,8 @@ static sr_nat_mapping_t * natTrustedCreateMapping(sr_nat_t *nat, uint32_t ip_int
    }
    else if (type == nat_mapping_tcp)
    {
-      sr_nat_connection_t * firstConnection = malloc(sizeof(sr_nat_connection_t));
-      assert(firstConnection);
-      
-      mapping->aux_ext = nat->nextTcpPortNumber;
-      
-      firstConnection->connectionState = nat_conn_outbound_syn;
-      firstConnection->next = NULL;
-      mapping->conns = firstConnection;
-      
+      mapping->aux_ext = htons(nat->nextTcpPortNumber);
+      mapping->conns = NULL;
       if (++nat->nextTcpPortNumber > LAST_PORT_NUMBER)
       {
          /* TODO: Point of improvement. We should really check if the port 
@@ -419,33 +419,249 @@ static void sr_nat_destroy_mapping(sr_nat_t* nat, sr_nat_mapping_t* natMapping)
  */
 void NatHandleRecievedIpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigned int length, sr_if_t const * const receivedInterface)
 {
-   sr_nat_mapping_t * natLookupResult = malloc(sizeof(sr_nat_mapping_t));
-   switch (natPacketDestination(sr, ipPacket, length, receivedInterface, natLookupResult))
+   if (ipPacket->ip_p == ip_protocol_tcp)
    {
-      case NAT_PACKET_INBOUND:
-         assert(natLookupResult);
-         natHandleReceivedInboundIpPacket(sr, ipPacket, length, receivedInterface, natLookupResult);
-         break;
-         
-      case NAT_PACKET_OUTBOUND:
-         assert(natLookupResult);
-         natHandleReceivedOutboundIpPacket(sr, ipPacket, length, receivedInterface, natLookupResult);
-         break;
-         
-      case NAT_PACKET_FOR_ROUTER:
-         IpHandleReceivedPacketToUs(sr, ipPacket, length, receivedInterface);
-         break;
-         
-      case NAT_PACKET_DEFLECTION:
-         IpForwardIpPacket(sr, ipPacket, length, receivedInterface);
-         break;
-         
-      case NAT_PACKET_DROP:
-      default:
-         LOG_MESSAGE("Received IP packet was unable to traverse NAT.\n");
-         break;
+      natHandleTcpPacket(sr, ipPacket, length, receivedInterface);
    }
-   free(natLookupResult);
+   else if (ipPacket->ip_p == ip_protocol_tcp)
+   {
+      natHandleIcmpPacket(sr, ipPacket, length, receivedInterface);
+   }
+   else
+   {
+      LOG_MESSAGE("Received packet of unknown IP protocol type %u. Dropping.\n", ipPacket->ip_p);
+   }
+}
+
+static void natHandleTcpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigned int length,
+   sr_if_t const * const receivedInterface)
+{
+   sr_tcp_hdr_t* tcpHeader = getTcpHeaderFromIpHeader(ipPacket);
+   
+   if (!TcpPerformIntegrityCheck(ipPacket, length))
+   {
+      LOG_MESSAGE("Received TCP packet with bad checksum. Dropping.\n");
+      return;
+   }
+   
+   if ((getInternalInterface(sr)->ip == receivedInterface->ip) && (IpDestinationIsUs(sr, ipPacket)))
+   {
+      IpHandleReceivedPacketToUs(sr, ipPacket, length, receivedInterface);
+   }
+   else if (getInternalInterface(sr)->ip == receivedInterface->ip)
+   {
+      sr_nat_mapping_t * natMapping = sr_nat_lookup_internal(sr->nat, ipPacket->ip_src,
+         tcpHeader->sourcePort, nat_mapping_tcp);
+      
+      if (ntohs(tcpHeader->offset_controlBits) & TCP_SYN_M)
+      {
+         if (natMapping == NULL)
+         {
+            /* Outbound SYN with no prior mapping. Create one! */
+            pthread_mutex_lock(&(sr->nat->lock));
+            sr_nat_connection_t *firstConnection = malloc(sizeof(sr_nat_connection_t));
+            sr_nat_mapping_t *sharedNatMapping;
+            natMapping = malloc(sizeof(sr_nat_mapping_t));
+            assert(firstConnection); assert(natMapping);
+            
+            sharedNatMapping = natTrustedCreateMapping(sr->nat, ipPacket->ip_src,
+               tcpHeader->sourcePort, nat_mapping_tcp);
+            assert(sharedNatMapping);
+            
+            /* Fill in first connection information. */
+            firstConnection->connectionState = nat_conn_outbound_syn;
+            firstConnection->external.ipAddress = ipPacket->ip_dst;
+            firstConnection->external.portNumber = tcpHeader->destinationPort;
+            
+            /* Add to the list of connections. */
+            firstConnection->next = sharedNatMapping->conns;
+            sharedNatMapping->conns = firstConnection;
+            
+            /* Create a copy so we can keep using it after we unlock the NAT table. */
+            memcpy(natMapping, sharedNatMapping, sizeof(sr_nat_mapping_t));
+            
+            pthread_mutex_unlock(&(sr->nat->lock));
+            
+            LOG_MESSAGE("Added new TCP mapping %u.%u.%u.%u:%u <-> %u.\n", 
+               (ntohl(natMapping->ip_int) >> 24) & 0xFF, (ntohl(natMapping->ip_int) >> 16) & 0xFF, 
+               (ntohl(natMapping->ip_int) >> 8) & 0xFF, ntohl(natMapping->ip_int) & 0xFF, 
+               ntohs(sharedNatMapping->aux_int), ntohs(sharedNatMapping->aux_ext));
+         }
+         else
+         {
+            /* Outbound SYN with prior mapping. Add the connection if one doesn't exist */
+            pthread_mutex_lock(&(sr->nat->lock));
+            sr_nat_mapping_t *sharedNatMapping = natTrustedLookupInternal(sr->nat, ipPacket->ip_src,
+               tcpHeader->sourcePort, nat_mapping_tcp);
+            assert(sharedNatMapping);
+            
+            sr_nat_connection_t *connection = natTrustedFindConnection(sharedNatMapping,
+               ipPacket->ip_dst, tcpHeader->destinationPort);
+            
+            if (connection == NULL)
+            {
+               /* Connection does not exist. Create it. */
+               connection = malloc(sizeof(sr_nat_connection_t));
+               assert(connection);
+               
+               /* Fill in connection information. */
+               connection->connectionState = nat_conn_outbound_syn;
+               connection->external.ipAddress = ipPacket->ip_dst;
+               connection->external.portNumber = tcpHeader->destinationPort;
+               
+               /* Add to the list of connections. */
+               connection->next = sharedNatMapping->conns;
+               sharedNatMapping->conns = connection;
+               
+               LOG_MESSAGE("Added new connection to TCP mapping %u.%u.%u.%u:%u <-> %u.\n", 
+                  (ntohl(natMapping->ip_int) >> 24) & 0xFF, (ntohl(natMapping->ip_int) >> 16) & 0xFF, 
+                  (ntohl(natMapping->ip_int) >> 8) & 0xFF, ntohl(natMapping->ip_int) & 0xFF, 
+                  ntohs(natMapping->aux_int), ntohs(natMapping->aux_ext));
+            }
+            else if (connection->connectionState == nat_conn_time_wait)
+            {
+               /* Give client opportunity to reopen the connection. */
+               connection->connectionState = nat_conn_outbound_syn;
+            }
+            else if (connection->connectionState == nat_conn_inbound_syn_pending)
+            {
+               connection->connectionState = nat_conn_connected;
+               /* TODO: Send queued inbound SYN. */
+            }
+            /* Only other options are connected and outbound syn, in which we 
+             * assume this is a retried packet. */
+            
+            pthread_mutex_unlock(&(sr->nat->lock));
+         }
+      }
+      else if (natMapping == NULL)
+      {
+         /* TCP packet attempted to traverse the NAT on an unopened 
+          * connection. What to do? Silently drop the packet. */
+         LOG_MESSAGE("Outbound non-SYN TCP packet attempted to traverse NAT "
+            "when no mapping existed. Dropping.\n");
+      }
+      else if (ntohs(tcpHeader->offset_controlBits) & TCP_FIN_M)
+      {
+         /* Outbound FIN detected. Put connection into TIME_WAIT state. */
+         pthread_mutex_lock(&(sr->nat->lock));
+         sr_nat_mapping_t *sharedNatMapping = natTrustedLookupInternal(sr->nat, ipPacket->ip_src,
+            tcpHeader->sourcePort, nat_mapping_tcp);
+         sr_nat_connection_t *associatedConnection = natTrustedFindConnection(sharedNatMapping, 
+            ipPacket->ip_dst, tcpHeader->destinationPort);
+         if (associatedConnection)
+         {
+            associatedConnection->connectionState = nat_conn_time_wait;
+         }
+      }
+      
+      /* All NAT state updating done by this point. Translate and forward. */
+      natHandleReceivedOutboundIpPacket(sr, ipPacket, length, receivedInterface, natMapping);
+      
+      if (natMapping) { free(natMapping); }
+   }
+   else /* Inbound TCP packet */
+   {
+      sr_nat_mapping_t * natMapping = sr_nat_lookup_internal(sr->nat, ipPacket->ip_src,
+         tcpHeader->sourcePort, nat_mapping_tcp);
+      
+      if (natMapping) { free(natMapping); }
+   }
+}
+
+static void natHandleIcmpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigned int length,
+   sr_if_t const * const receivedInterface)
+{
+   sr_icmp_hdr_t * icmpHeader = getIcmpHeaderFromIpHeader(ipPacket);
+   
+   if (!IcmpPerformIntegrityCheck(icmpHeader, length - getIpHeaderLength(ipPacket)));
+   {
+      LOG_MESSAGE("Received ICMP packet with bad checksum. Dropping.\n");
+      return;
+   }
+   
+   if ((getInternalInterface(sr)->ip == receivedInterface->ip) && (IpDestinationIsUs(sr, ipPacket)))
+   {
+      IpHandleReceivedPacketToUs(sr, ipPacket, length, receivedInterface);
+   }
+   else if (getInternalInterface(sr)->ip == receivedInterface->ip)
+   {
+      if ((icmpHeader->icmp_type == icmp_type_echo_request)
+         || (icmpHeader->icmp_type == icmp_type_echo_reply))
+      {
+         sr_icmp_t0_hdr_t * icmpPingHdr = (sr_icmp_t0_hdr_t *) icmpHeader;
+         sr_nat_mapping_t * natLookupResult = sr_nat_lookup_internal(sr->nat, ipPacket->ip_src, 
+            icmpPingHdr->ident, nat_mapping_icmp);
+         
+         /* No mapping? Make one! */
+         if (natLookupResult == NULL)
+         {
+            natLookupResult = sr_nat_insert_mapping(sr->nat, ipPacket->ip_src, icmpPingHdr->ident,
+               nat_mapping_icmp);
+         }
+         
+         natHandleReceivedOutboundIpPacket(sr, ipPacket, length, receivedInterface, natLookupResult);
+         free(natLookupResult);
+      }
+      else if (icmpHeader->icmp_type == icmp_type_desination_unreachable)
+      {
+         
+      }
+      else if (icmpHeader->icmp_type == icmp_type_time_exceeded)
+      {
+         
+      }
+      else
+      {
+         /* By RFC, no other ICMP types have to support NAT traversal (SHOULDs 
+          * instead of MUSTs). It's not that I'm lazy, it's just that this 
+          * assignment is hard enough as it is. */
+      }
+   }
+   else /* Inbound ICMP packet */
+   {
+      if (!IpDestinationIsUs(sr, ipPacket))
+      {
+         /* Sender not attempting to traverse the NAT. Allow the packet to be 
+          * routed without alteration. */
+         IpForwardIpPacket(sr, ipPacket, length, receivedInterface);
+         /* TODO: Need to come up with a way of preventing accidental NAT traversal in this case. */
+      }
+      else if ((icmpHeader->icmp_type == icmp_type_echo_request)
+         || (icmpHeader->icmp_type == icmp_type_echo_reply))
+      {
+         sr_icmp_t0_hdr_t * icmpPingHdr = (sr_icmp_t0_hdr_t *) icmpHeader;
+         sr_nat_mapping_t * natLookupResult = sr_nat_lookup_external(sr->nat, icmpPingHdr->ident, 
+            nat_mapping_icmp);
+         
+         if (natLookupResult == NULL)
+         {
+            /* No mapping exists. Assume ping is actually for us. */
+            IpHandleReceivedPacketToUs(sr, ipPacket, length, receivedInterface);
+         }
+         else
+         {
+            natHandleReceivedInboundIpPacket(sr, ipPacket, length, receivedInterface,
+               natLookupResult);
+            free (natLookupResult);
+         }
+      }
+      else if (icmpHeader->icmp_type == icmp_type_desination_unreachable)
+      {
+         
+      }
+      else if (icmpHeader->icmp_type == icmp_type_time_exceeded)
+      {
+         
+      }
+      else
+      {
+         /* By RFC, no other ICMP types have to support NAT traversal (SHOULDs 
+          * instead of MUSTs). It's not that I'm lazy, it's just that this 
+          * assignment is hard enough as it is. */
+      }
+      
+   }
 }
 
 /**
@@ -562,13 +778,13 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
          assert(natMapping);
          
          /* Handle ICMP identify remap and validate. */
-         rewrittenIcmpHeader->ident = htons(natMapping->aux_ext);
+         rewrittenIcmpHeader->ident = natMapping->aux_ext;
          rewrittenIcmpHeader->icmp_sum = 0;
          rewrittenIcmpHeader->icmp_sum = cksum(rewrittenIcmpHeader, icmpLength);
          
          /* Handle IP address remap and validate. */
          packet->ip_src = sr_get_interface(sr,
-            IpGetPacketRoute(sr, ntohl(packet->ip_dst))->interface)->ip; /* Already in network order */
+            IpGetPacketRoute(sr, ntohl(packet->ip_dst))->interface)->ip;
          
          IpForwardIpPacket(sr, packet, length, receivedInterface);
       }
@@ -582,18 +798,14 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
    {
       sr_tcp_hdr_t* tcpHeader = (sr_tcp_hdr_t *) (((uint8_t*) packet) + getIpHeaderLength(packet));
       
-      tcpHeader->sourcePort = htons(natMapping->aux_ext);
+      tcpHeader->sourcePort = natMapping->aux_ext;
       packet->ip_src = sr_get_interface(sr,
          IpGetPacketRoute(sr, ntohl(packet->ip_dst))->interface)->ip;
       
       natRecalculateTcpChecksum(packet, length);
       IpForwardIpPacket(sr, packet, length, receivedInterface);
    }
-   else
-   {
-      LOG_MESSAGE("Packet received with unknown transport protocol 0x%x. Dropping.\n", packet->ip_p);
-      /* TODO: Something else? */
-   }
+   /* If another protocol, should have been dropped by now. */
 }
 
 static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, 
@@ -760,7 +972,7 @@ static NatDestinationResult_t natPacketDestination(sr_instance_t * sr,
             {
                /* Simulataneous open successful */
             }
-            else if (natLookupResult->conns->connectionState == nat_conn_saw_fin)
+            else if (natLookupResult->conns->connectionState == nat_conn_time_wait)
             {
                natLookupResult->conns->connectionState = nat_conn_outbound_syn;
             }
@@ -1064,4 +1276,21 @@ static void natRecalculateTcpChecksum(sr_ip_hdr_t * tcpPacket, unsigned int leng
    tcpHeader->checksum = cksum(packetCopy, sizeof(sr_tcp_ip_pseudo_hdr_t) + tcpLength);
    
    free(packetCopy);
+}
+
+static sr_nat_connection_t * natTrustedFindConnection(sr_nat_mapping_t *natEntry, uint32_t ip_ext, 
+   uint16_t port_ext)
+{
+   sr_nat_connection_t * connectionIterator = natEntry->conns;
+   while (connectionIterator != NULL)
+   {
+      if ((connectionIterator->external.ipAddress == ip_ext) 
+         && (connectionIterator->external.portNumber == port_ext))
+      {
+         break;
+      }
+      
+      connectionIterator = connectionIterator->next;
+   }
+   return connectionIterator;
 }

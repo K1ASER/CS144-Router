@@ -80,9 +80,9 @@
 /* Structure of a ICMP header
  */
 struct sr_icmp_hdr {
-  uint8_t icmp_type;
-  uint8_t icmp_code;
-  uint16_t icmp_sum;
+  uint8_t icmp_type; /**< ICMP packet type */
+  uint8_t icmp_code; /**< ICMP packet code (aka sub-type) */
+  uint16_t icmp_sum; /**< ICMP checksum */
   
 } __attribute__ ((packed)) ;
 typedef struct sr_icmp_hdr sr_icmp_hdr_t;

@@ -71,6 +71,16 @@ static inline uint16_t getIpHeaderLength(sr_ip_hdr_t const * const pktPtr)
    return (pktPtr->ip_hl) * 4;
 }
 
+static inline sr_icmp_hdr_t * getIcmpHeaderFromIpHeader(sr_ip_hdr_t * packetPtr)
+{
+   return (sr_icmp_hdr_t*) (((uint8_t*) packetPtr) + getIpHeaderLength(packetPtr));
+}
+
+static inline sr_tcp_hdr_t * getTcpHeaderFromIpHeader(sr_ip_hdr_t * packetPtr)
+{
+   return (sr_tcp_hdr_t*) (((uint8_t*) packetPtr) + getIpHeaderLength(packetPtr));
+}
+
 /* -- sr_main.c -- */
 int sr_verify_routing_table(struct sr_instance* sr);
 
