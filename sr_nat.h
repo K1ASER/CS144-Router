@@ -50,15 +50,9 @@ typedef struct sr_nat_connection
 {
    /* add TCP connection state data members here */
    sr_nat_tcp_conn_state_t connectionState;
+   time_t lastAccessed;
+   sr_ip_hdr_t * queuedInboundSyn;
    
-#if 0
-   /* Internal not needed (implied by parent NAT mapping. */
-   struct
-   {
-      uint32_t ipAddress;
-      uint16_t portNumber;
-   } internal;
-#endif
    struct
    {
       uint32_t ipAddress;
