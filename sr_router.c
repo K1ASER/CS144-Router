@@ -330,6 +330,217 @@ void IpSendTypeThreeIcmpPacket(struct sr_instance* sr, sr_icmp_code_t icmpCode,
    free(replyPacket);
 }
 
+/**
+ * IpHandleReceivedPacketToUs()\n
+ * IP Stack Level: Network (IP)\n
+ * @brief Function handles a received IP packet destined for the router.
+ * @param sr pointer to simple router state structure.
+ * @param packet pointer to IP header of packet
+ * @param length length in bytes of packet IP header and payload.
+ * @param interface pointer to router interface that packet was received.
+ */
+void IpHandleReceivedPacketToUs(struct sr_instance* sr, sr_ip_hdr_t* packet,
+   unsigned int length, sr_if_t const * const interface)
+{
+   /* Somebody must like me, because they're sending packets to my 
+    * address! */
+   if (packet->ip_p == (uint8_t) ip_protocol_icmp)
+   {
+      networkHandleIcmpPacket(sr, packet, length, interface);
+   }
+   else
+   {
+      /* I don't process anything else! Send port unreachable. */
+      LOG_MESSAGE("Received Non-ICMP packet destined for me. Sending ICMP port unreachable.\n");
+      IpSendTypeThreeIcmpPacket(sr, icmp_code_destination_port_unreachable, packet);
+   }
+}
+
+/**
+ * networkForwardIpPacket()\n
+ * IP Stack Level: Network (IP)\n
+ * @brief Function forwards (i.e routes) a provided received packet pointer.
+ * @param sr pointer to simple router structure
+ * @param packet pointer to received packet in need of routing
+ * @param length number of valid payload and IP header of packet.
+ * @param receivedInterface pointer to the interface the packet was originally received.
+ */
+void IpForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
+   unsigned int length, const struct sr_if* const receivedInterface)
+{
+   struct sr_rt* forwardRoute = IpGetPacketRoute(sr, ntohl(packet->ip_dst));
+   /* Decrement TTL and forward. */
+   uint8_t packetTtl = packet->ip_ttl - 1;
+   if (packetTtl == 0)
+   {
+      /* Uh oh... someone's just about run out of time. */
+      networkSendIcmpTtlExpired(sr, packet, length, receivedInterface);
+      return;
+   }
+   else
+   {
+      /* Recalculate checksum since we altered the packet header. */
+      packet->ip_ttl = packetTtl;
+      packet->ip_sum = 0;
+      packet->ip_sum = cksum(packet, getIpHeaderLength(packet));
+   }
+   
+   /* Check to make sure we made a viable routing decision. If we made the 
+    * decision to forward onto the interface we received the packet or 
+    * couldn't make a decision, something is wrong. Send a host 
+    * unreachable if this is the case. */
+   if (forwardRoute != NULL)
+   {
+      /* We found a viable route. Forward to it! */
+      uint8_t* forwardPacket = malloc(length + sizeof(sr_ethernet_hdr_t));
+      memcpy(forwardPacket + sizeof(sr_ethernet_hdr_t), packet, length);
+      
+      LOG_MESSAGE("Forwarding from interface %s to %s\n", receivedInterface->name, 
+         forwardRoute->interface);
+   
+      linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*)forwardPacket,
+         length + sizeof(sr_ethernet_hdr_t), forwardRoute);
+      
+      free(forwardPacket);
+   }
+   else
+   {
+      /* Routing table told us to route this packet back the way it came. 
+       * That's probably wrong, so we assume the host is actually 
+       * unreachable. */
+      LOG_MESSAGE("Routing decision could not be made. Sending ICMP network unreachable.\n");
+      IpSendTypeThreeIcmpPacket(sr, icmp_code_network_unreachable, packet);
+   }
+}
+
+/**
+ * IpGetPacketRoute()\n
+ * IP Stack Level: Network (IP)\n
+ * @brief Function gets the longest prefix match route for a provided destination IP address.
+ * @param sr pointer to simple router structure.
+ * @param destIp destination IP address.
+ * @return pointer to the routing table entry where we should route the packet.
+ */
+sr_rt_t* IpGetPacketRoute(struct sr_instance* sr, in_addr_t destIp)
+{
+   struct sr_rt* routeIter;
+   int networkMaskLength = -1;
+   struct sr_rt* ret = NULL;
+   
+   for (routeIter = sr->routing_table; routeIter; routeIter = routeIter->next)
+   {
+      /* Assure the route we are about to check has a longer mask then the 
+       * last one we chose.  This is so we can find the longest prefix match. */
+      if (networkGetMaskLength(routeIter->mask.s_addr) > networkMaskLength)
+      {
+         /* Mask is longer, now see if the destination matches. */
+         if ((destIp & routeIter->mask.s_addr) 
+            == (ntohl(routeIter->dest.s_addr) & routeIter->mask.s_addr))
+         {
+            /* Longer prefix match found. */
+            ret = routeIter;
+            networkMaskLength = networkGetMaskLength(routeIter->mask.s_addr);
+         }
+      }
+   }
+   
+   return ret;
+}
+
+/**
+ * IcmpPerformIntegrityCheck()\n
+ * IP Stack Level: Transport (ICMP)\n
+ * @brief Performs the standard ICMP checksum on a received ICMP packet.
+ * @param icmpPacket pointer to the ICMP payload.
+ * @param length length of the ICMP payload.
+ * @return true if the packet checksum succeeds.
+ * @return false otherwise.
+ */
+bool IcmpPerformIntegrityCheck(sr_icmp_hdr_t * const icmpPacket, unsigned int length)
+{
+   /* Check the integrity of the ICMP packet */
+   uint16_t headerChecksum = icmpPacket->icmp_sum;
+   uint16_t calculatedChecksum = 0;
+   icmpPacket->icmp_sum = 0;
+   
+   calculatedChecksum = cksum(icmpPacket, length);
+   icmpPacket->icmp_sum = headerChecksum;
+   
+   if (headerChecksum != calculatedChecksum)
+   {
+      /* Bad checksum... */
+      return false;
+   }
+   return true;
+}
+
+/**
+ * TcpPerformIntegrityCheck()\n
+ * IP Stack Level: Transport (TCP)\n
+ * @brief Performs the standard TCP checksum on a received TCP packet.
+ * @param tcpPacket pointer to the IP datagram.
+ * @param length length of the IP datagram
+ * @return true if the packet checksum succeeds.
+ * @return false otherwise.
+ * @note We need the IP datagram pointer so the function can create the TCP 
+ *       Pseudo-header for calculating the checksum.
+ */
+bool TcpPerformIntegrityCheck(sr_ip_hdr_t * const tcpPacket, unsigned int length)
+{
+   bool ret;
+   unsigned int tcpLength = length - getIpHeaderLength(tcpPacket);
+   uint8_t *packetCopy = malloc(sizeof(sr_tcp_ip_pseudo_hdr_t) + tcpLength);
+   sr_tcp_ip_pseudo_hdr_t * checksummedHeader = (sr_tcp_ip_pseudo_hdr_t *) packetCopy;
+   sr_tcp_hdr_t * const tcpHeader = (sr_tcp_hdr_t * const ) (((uint8_t*) tcpPacket)
+      + getIpHeaderLength(tcpPacket));
+   
+   uint16_t calculatedChecksum = 0;
+   uint16_t headerChecksum = tcpHeader->checksum;
+   tcpHeader->checksum = 0;
+   
+   /* I wish there was a better way to do this with pointer magic, but I don't 
+    * see it. Make a copy of the packet and prepend the IP pseudo-header to 
+    * the front. */
+   memcpy(packetCopy + sizeof(sr_tcp_ip_pseudo_hdr_t), tcpHeader, tcpLength);
+   checksummedHeader->sourceAddress = tcpPacket->ip_src;
+   checksummedHeader->destinationAddress = tcpPacket->ip_dst;
+   checksummedHeader->zeros = 0;
+   checksummedHeader->protocol = ip_protocol_tcp;
+   checksummedHeader->tcpLength = htons(tcpLength);
+   
+   calculatedChecksum = cksum(packetCopy, sizeof(sr_tcp_ip_pseudo_hdr_t) + tcpLength);
+   
+   ret = (headerChecksum == calculatedChecksum) ? true : false; 
+   
+   free(packetCopy);
+   
+   return ret;
+}
+
+/**
+ * IpDestinationIsUs()\n
+ * IP Stack Level: Network (IP)\n
+ * @brief Function checks if ANY of our IP addresses matches the packet's destination IP.
+ * @param sr pointer to simple router state.
+ * @param packet pointer to received packet.
+ * @return true if we were the destination of this packet. false otherwise.
+ */
+bool IpDestinationIsUs(struct sr_instance* sr, const sr_ip_hdr_t* const packet)
+{
+   struct sr_if* interfaceIterator;
+   
+   for (interfaceIterator = sr->if_list; interfaceIterator != NULL; interfaceIterator =
+      interfaceIterator->next)
+   {
+      if (packet->ip_dst == interfaceIterator->ip)
+      {
+         return true;
+      }
+   }
+   
+   return false;
+}
+
 /*
  *-----------------------------------------------------------------------------
  * Private Function Definitions
@@ -539,32 +750,6 @@ static void networkHandleReceivedIpPacket(struct sr_instance* sr, sr_ip_hdr_t* p
 }
 
 /**
- * IpHandleReceivedPacketToUs()\n
- * IP Stack Level: Network (IP)\n
- * @brief Function handles a received IP packet destined for the router.
- * @param sr pointer to simple router state structure.
- * @param packet pointer to IP header of packet
- * @param length length in bytes of packet IP header and payload.
- * @param interface pointer to router interface that packet was received.
- */
-void IpHandleReceivedPacketToUs(struct sr_instance* sr, sr_ip_hdr_t* packet,
-   unsigned int length, sr_if_t const * const interface)
-{
-   /* Somebody must like me, because they're sending packets to my 
-    * address! */
-   if (packet->ip_p == (uint8_t) ip_protocol_icmp)
-   {
-      networkHandleIcmpPacket(sr, packet, length, interface);
-   }
-   else
-   {
-      /* I don't process anything else! Send port unreachable. */
-      LOG_MESSAGE("Received Non-ICMP packet destined for me. Sending ICMP port unreachable.\n");
-      IpSendTypeThreeIcmpPacket(sr, icmp_code_destination_port_unreachable, packet);
-   }
-}
-
-/**
  * networkHandleIcmpPacket()\n
  * IP Stack Level: Network (IP)\n
  * @brief Function handles a received ICMP packet.
@@ -705,97 +890,6 @@ static void networkSendIcmpTtlExpired(struct sr_instance* sr, sr_ip_hdr_t* origi
 }
 
 /**
- * networkForwardIpPacket()\n
- * IP Stack Level: Network (IP)\n
- * @brief Function forwards (i.e routes) a provided received packet pointer.
- * @param sr pointer to simple router structure
- * @param packet pointer to received packet in need of routing
- * @param length number of valid payload and IP header of packet.
- * @param receivedInterface pointer to the interface the packet was originally received.
- */
-void IpForwardIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet,
-   unsigned int length, const struct sr_if* const receivedInterface)
-{
-   struct sr_rt* forwardRoute = IpGetPacketRoute(sr, ntohl(packet->ip_dst));
-   /* Decrement TTL and forward. */
-   uint8_t packetTtl = packet->ip_ttl - 1;
-   if (packetTtl == 0)
-   {
-      /* Uh oh... someone's just about run out of time. */
-      networkSendIcmpTtlExpired(sr, packet, length, receivedInterface);
-      return;
-   }
-   else
-   {
-      /* Recalculate checksum since we altered the packet header. */
-      packet->ip_ttl = packetTtl;
-      packet->ip_sum = 0;
-      packet->ip_sum = cksum(packet, getIpHeaderLength(packet));
-   }
-   
-   /* Check to make sure we made a viable routing decision. If we made the 
-    * decision to forward onto the interface we received the packet or 
-    * couldn't make a decision, something is wrong. Send a host 
-    * unreachable if this is the case. */
-   if (forwardRoute != NULL)
-   {
-      /* We found a viable route. Forward to it! */
-      uint8_t* forwardPacket = malloc(length + sizeof(sr_ethernet_hdr_t));
-      memcpy(forwardPacket + sizeof(sr_ethernet_hdr_t), packet, length);
-      
-      LOG_MESSAGE("Forwarding from interface %s to %s\n", receivedInterface->name, 
-         forwardRoute->interface);
-   
-      linkArpAndSendPacket(sr, (sr_ethernet_hdr_t*)forwardPacket,
-         length + sizeof(sr_ethernet_hdr_t), forwardRoute);
-      
-      free(forwardPacket);
-   }
-   else
-   {
-      /* Routing table told us to route this packet back the way it came. 
-       * That's probably wrong, so we assume the host is actually 
-       * unreachable. */
-      LOG_MESSAGE("Routing decision could not be made. Sending ICMP network unreachable.\n");
-      IpSendTypeThreeIcmpPacket(sr, icmp_code_network_unreachable, packet);
-   }
-}
-
-/**
- * IpGetPacketRoute()\n
- * IP Stack Level: Network (IP)\n
- * @brief Function gets the longest prefix match route for a provided destination IP address.
- * @param sr pointer to simple router structure.
- * @param destIp destination IP address.
- * @return pointer to the routing table entry where we should route the packet.
- */
-sr_rt_t* IpGetPacketRoute(struct sr_instance* sr, in_addr_t destIp)
-{
-   struct sr_rt* routeIter;
-   int networkMaskLength = -1;
-   struct sr_rt* ret = NULL;
-   
-   for (routeIter = sr->routing_table; routeIter; routeIter = routeIter->next)
-   {
-      /* Assure the route we are about to check has a longer mask then the 
-       * last one we chose.  This is so we can find the longest prefix match. */
-      if (networkGetMaskLength(routeIter->mask.s_addr) > networkMaskLength)
-      {
-         /* Mask is longer, now see if the destination matches. */
-         if ((destIp & routeIter->mask.s_addr) 
-            == (ntohl(routeIter->dest.s_addr) & routeIter->mask.s_addr))
-         {
-            /* Longer prefix match found. */
-            ret = routeIter;
-            networkMaskLength = networkGetMaskLength(routeIter->mask.s_addr);
-         }
-      }
-   }
-   
-   return ret;
-}
-
-/**
  * linkArpAndSendPacket()\n
  * IP Stack Level: Link Layer (Ethernet)\n
  * Description:\n
@@ -851,100 +945,6 @@ static void linkArpAndSendPacket(sr_instance_t *sr, sr_ethernet_hdr_t* packet,
          arpRequestPtr->sent = time(NULL);
       }
    }
-}
-
-/**
- * icmpPerformIntegrityCheck()\n
- * IP Stack Level: Transport (ICMP)\n
- * @brief Performs the standard ICMP checksum on a received ICMP packet.
- * @param icmpPacket pointer to the ICMP payload.
- * @param length length of the ICMP payload.
- * @return true if the packet checksum succeeds.
- * @return false otherwise.
- */
-bool IcmpPerformIntegrityCheck(sr_icmp_hdr_t * const icmpPacket, unsigned int length)
-{
-   /* Check the integrity of the ICMP packet */
-   uint16_t headerChecksum = icmpPacket->icmp_sum;
-   uint16_t calculatedChecksum = 0;
-   icmpPacket->icmp_sum = 0;
-   
-   calculatedChecksum = cksum(icmpPacket, length);
-   icmpPacket->icmp_sum = headerChecksum;
-   
-   if (headerChecksum != calculatedChecksum)
-   {
-      /* Bad checksum... */
-      return false;
-   }
-   return true;
-}
-
-/**
- * tcpPerformIntegrityCheck()\n
- * IP Stack Level: Transport (TCP)\n
- * @brief Performs the standard TCP checksum on a received TCP packet.
- * @param tcpPacket pointer to the IP datagram.
- * @param length length of the IP datagram
- * @return true if the packet checksum succeeds.
- * @return false otherwise.
- * @note We need the IP datagram pointer so the function can create the TCP 
- *       Pseudo-header for calculating the checksum.
- */
-bool TcpPerformIntegrityCheck(sr_ip_hdr_t * const tcpPacket, unsigned int length)
-{
-   bool ret;
-   unsigned int tcpLength = length - getIpHeaderLength(tcpPacket);
-   uint8_t *packetCopy = malloc(sizeof(sr_tcp_ip_pseudo_hdr_t) + tcpLength);
-   sr_tcp_ip_pseudo_hdr_t * checksummedHeader = (sr_tcp_ip_pseudo_hdr_t *) packetCopy;
-   sr_tcp_hdr_t * const tcpHeader = (sr_tcp_hdr_t * const ) (((uint8_t*) tcpPacket)
-      + getIpHeaderLength(tcpPacket));
-   
-   uint16_t calculatedChecksum = 0;
-   uint16_t headerChecksum = tcpHeader->checksum;
-   tcpHeader->checksum = 0;
-   
-   /* I wish there was a better way to do this with pointer magic, but I don't 
-    * see it. Make a copy of the packet and prepend the IP pseudo-header to 
-    * the front. */
-   memcpy(packetCopy + sizeof(sr_tcp_ip_pseudo_hdr_t), tcpHeader, tcpLength);
-   checksummedHeader->sourceAddress = tcpPacket->ip_src;
-   checksummedHeader->destinationAddress = tcpPacket->ip_dst;
-   checksummedHeader->zeros = 0;
-   checksummedHeader->protocol = ip_protocol_tcp;
-   checksummedHeader->tcpLength = htons(tcpLength);
-   
-   calculatedChecksum = cksum(packetCopy, sizeof(sr_tcp_ip_pseudo_hdr_t) + tcpLength);
-   
-   ret = (headerChecksum == calculatedChecksum) ? true : false; 
-   
-   free(packetCopy);
-   
-   return ret;
-}
-
-/**
- * networkIpDesinationIsUs()\n
- * IP Stack Level: Network (IP)\n
- * @brief Function checks if ANY of our IP addresses matches the packet's destination IP.
- * @param sr pointer to simple router state.
- * @param packet pointer to received packet.
- * @return true if we were the destination of this packet. false otherwise.
- */
-bool IpDestinationIsUs(struct sr_instance* sr, const sr_ip_hdr_t* const packet)
-{
-   struct sr_if* interfaceIterator;
-   
-   for (interfaceIterator = sr->if_list; interfaceIterator != NULL; interfaceIterator =
-      interfaceIterator->next)
-   {
-      if (packet->ip_dst == interfaceIterator->ip)
-      {
-         return true;
-      }
-   }
-   
-   return false;
 }
 
 /**
