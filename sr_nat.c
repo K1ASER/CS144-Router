@@ -16,17 +16,6 @@
 # define LOG_MESSAGE(...)
 #endif
 
-#define SIM_OPEN_INBOUND_TIMEOUT    (6)
-
-typedef enum
-{
-   NAT_PACKET_INBOUND,
-   NAT_PACKET_OUTBOUND,
-   NAT_PACKET_FOR_ROUTER,
-   NAT_PACKET_DEFLECTION,
-   NAT_PACKET_DROP
-} NatDestinationResult_t;
-
 static const char internalInterfaceName[] = "eth1";
 
 /**
@@ -51,9 +40,6 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
    unsigned int length, const struct sr_if* const receivedInterface, sr_nat_mapping_t * natMapping);
 static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, 
    unsigned int length, const struct sr_if* const receivedInterface, sr_nat_mapping_t * natMapping);
-static NatDestinationResult_t natPacketDestination(sr_instance_t * sr, 
-   sr_ip_hdr_t * const packet, unsigned int length, sr_if_t const * const receivedInterface, 
-   sr_nat_mapping_t * associatedMapping);
 
 static void natHandleTcpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsigned int length,
    sr_if_t const * const receivedInterface);
@@ -796,21 +782,66 @@ static void natHandleIcmpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsign
          natHandleReceivedOutboundIpPacket(sr, ipPacket, length, receivedInterface, natLookupResult);
          free(natLookupResult);
       }
-      else if (icmpHeader->icmp_type == icmp_type_desination_unreachable)
+      else 
       {
+         sr_ip_hdr_t * embeddedIpPacket = NULL;
+         sr_nat_mapping_t * natLookupResult = NULL;
          
-      }
-      else if (icmpHeader->icmp_type == icmp_type_time_exceeded)
-      {
+         if (icmpHeader->icmp_type == icmp_type_desination_unreachable)
+         {
+            sr_icmp_t3_hdr_t * unreachableHeader = (sr_icmp_t3_hdr_t *) icmpHeader;
+            embeddedIpPacket = (sr_ip_hdr_t *) unreachableHeader->data;
+         }
+         else if (icmpHeader->icmp_type == icmp_type_time_exceeded)
+         {
+            sr_icmp_t11_hdr_t * timeExceededHeader = (sr_icmp_t11_hdr_t *) icmpHeader;
+            embeddedIpPacket = (sr_ip_hdr_t *) timeExceededHeader->data;
+         }
+         else
+         {
+            /* By RFC, no other ICMP types have to support NAT traversal (SHOULDs 
+             * instead of MUSTs). It's not that I'm lazy, it's just that this 
+             * assignment is hard enough as it is. */
+            LOG_MESSAGE("Dropping unsupported outbound ICMP packet Type: %u Code: %u.\n",
+               icmpHeader->icmp_type, icmpHeader->icmp_code);
+            return;
+         }
          
-      }
-      else
-      {
-         /* By RFC, no other ICMP types have to support NAT traversal (SHOULDs 
-          * instead of MUSTs). It's not that I'm lazy, it's just that this 
-          * assignment is hard enough as it is. */
-         LOG_MESSAGE("Dropping unsupported outbound ICMP packet Type: %u Code: %u.\n", 
-            icmpHeader->icmp_type, icmpHeader->icmp_code);
+         assert(embeddedIpPacket);
+         
+         if (embeddedIpPacket->ip_p == ip_protocol_icmp)
+         {
+            sr_icmp_t0_hdr_t * embeddedIcmpHeader =
+               (sr_icmp_t0_hdr_t *) getIcmpHeaderFromIpHeader(embeddedIpPacket);
+            if ((embeddedIcmpHeader->icmp_type == icmp_type_echo_request)
+               || (embeddedIcmpHeader->icmp_type == icmp_type_echo_reply))
+            {
+               natLookupResult = sr_nat_lookup_internal(sr->nat, embeddedIpPacket->ip_dst, 
+                  embeddedIcmpHeader->ident, nat_mapping_icmp);
+            }
+            /* Otherwise, we will not have a mapping for this ICMP type. 
+             * Either way, echo request and echo reply are the only ICMP 
+             * packet types that can generate another ICMP packet. */
+         }
+         else if (embeddedIpPacket->ip_p == ip_protocol_tcp)
+         {
+            sr_tcp_hdr_t * embeddedTcpHeader = getTcpHeaderFromIpHeader(embeddedIpPacket);
+            natLookupResult = sr_nat_lookup_internal(sr->nat, embeddedIpPacket->ip_dst,
+               embeddedTcpHeader->destinationPort, nat_mapping_tcp);
+         }
+         else
+         {
+            /* No way we have a mapping for an unsupported protocol. 
+             * Silently drop the packet. */
+            return;
+         }
+         
+         if (natLookupResult != NULL)
+         {
+            natHandleReceivedOutboundIpPacket(sr, ipPacket, length, receivedInterface,
+               natLookupResult);
+            free(natLookupResult);
+         }
       }
    }
    else /* Inbound ICMP packet */
@@ -856,21 +887,65 @@ static void natHandleIcmpPacket(sr_instance_t* sr, sr_ip_hdr_t* ipPacket, unsign
             free (natLookupResult);
          }
       }
-      else if (icmpHeader->icmp_type == icmp_type_desination_unreachable)
+      else 
       {
+         sr_ip_hdr_t * embeddedIpPacket = NULL;
+         sr_nat_mapping_t * natLookupResult = NULL;
          
-      }
-      else if (icmpHeader->icmp_type == icmp_type_time_exceeded)
-      {
+         if (icmpHeader->icmp_type == icmp_type_desination_unreachable)
+         {
+            sr_icmp_t3_hdr_t * unreachableHeader = (sr_icmp_t3_hdr_t *) icmpHeader;
+            embeddedIpPacket = (sr_ip_hdr_t *) unreachableHeader->data;
+         }
+         else if (icmpHeader->icmp_type == icmp_type_time_exceeded)
+         {
+            sr_icmp_t11_hdr_t * timeExceededHeader = (sr_icmp_t11_hdr_t *) icmpHeader;
+            embeddedIpPacket = (sr_ip_hdr_t *) timeExceededHeader->data;
+         }
+         else
+         {
+            /* By RFC, no other ICMP types have to support NAT traversal (SHOULDs 
+             * instead of MUSTs). It's not that I'm lazy, it's just that this 
+             * assignment is hard enough as it is. */
+            LOG_MESSAGE("Dropping unsupported inbound ICMP packet Type: %u Code: %u.\n",
+               icmpHeader->icmp_type, icmpHeader->icmp_code);
+            return;
+         }
          
-      }
-      else
-      {
-         /* By RFC, no other ICMP types have to support NAT traversal (SHOULDs 
-          * instead of MUSTs). It's not that I'm lazy, it's just that this 
-          * assignment is hard enough as it is. */
-         LOG_MESSAGE("Dropping unsupported inbound ICMP packet Type: %u Code: %u.\n", 
-            icmpHeader->icmp_type, icmpHeader->icmp_code);
+         assert(embeddedIpPacket);
+         
+         if (embeddedIpPacket->ip_p == ip_protocol_icmp)
+         {
+            sr_icmp_t0_hdr_t * embeddedIcmpHeader =
+               (sr_icmp_t0_hdr_t *) getIcmpHeaderFromIpHeader(embeddedIpPacket);
+            if ((embeddedIcmpHeader->icmp_type == icmp_type_echo_request)
+               || (embeddedIcmpHeader->icmp_type == icmp_type_echo_reply))
+            {
+               natLookupResult = sr_nat_lookup_external(sr->nat, embeddedIcmpHeader->ident, 
+                  nat_mapping_icmp);
+            }
+            /* Otherwise, we will not have a mapping for this ICMP type. 
+             * Either way, echo request and echo reply are the only ICMP 
+             * packet types that can generate another ICMP packet. */
+         }
+         else if (embeddedIpPacket->ip_p == ip_protocol_tcp)
+         {
+            sr_tcp_hdr_t * embeddedTcpHeader = getTcpHeaderFromIpHeader(embeddedIpPacket);
+            natLookupResult = sr_nat_lookup_external(sr->nat, embeddedTcpHeader->sourcePort, nat_mapping_tcp);
+         }
+         else
+         {
+            /* No way we have a mapping for an unsupported protocol. 
+             * Silently drop the packet. */
+            return;
+         }
+         
+         if (natLookupResult != NULL)
+         {
+            natHandleReceivedInboundIpPacket(sr, ipPacket, length, receivedInterface,
+               natLookupResult);
+            free(natLookupResult);
+         }
       }
    }
 }
@@ -998,10 +1073,53 @@ static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_
          
          IpForwardIpPacket(sr, packet, length, receivedInterface);
       }
-      else if (icmpPacketHeader->icmp_type == icmp_type_desination_unreachable)
+      else
       {
-         /* This packet is actually associated with a stream. */
-         assert(packet->ip_p == ip_protocol_tcp);
+         int icmpLength = length - getIpHeaderLength(packet);
+         sr_ip_hdr_t * originalDatagram;
+         if (icmpPacketHeader->icmp_type == icmp_type_desination_unreachable)
+         {
+            /* This packet is actually associated with a stream. */
+            sr_icmp_t3_hdr_t *unreachablePacketHeader = (sr_icmp_t3_hdr_t *) icmpPacketHeader;
+            originalDatagram = (sr_ip_hdr_t*) (unreachablePacketHeader->data);
+         }
+         else if (icmpPacketHeader->icmp_type == icmp_type_time_exceeded)
+         {
+            sr_icmp_t11_hdr_t *unreachablePacketHeader = (sr_icmp_t11_hdr_t *) icmpPacketHeader;
+            originalDatagram = (sr_ip_hdr_t*) (unreachablePacketHeader->data);
+         }
+            
+         assert(natMapping);
+         
+         if (originalDatagram->ip_p == ip_protocol_tcp)
+         {
+            sr_tcp_hdr_t *originalTransportHeader = getTcpHeaderFromIpHeader(originalDatagram);
+            
+            /* Perform mapping on embedded payload */
+            originalTransportHeader->destinationPort = natMapping->aux_ext;
+            originalDatagram->ip_dst = sr_get_interface(sr,
+               IpGetPacketRoute(sr, ntohl(packet->ip_dst))->interface)->ip;
+         }
+         else if (originalDatagram->ip_p == ip_protocol_icmp)
+         {
+            sr_icmp_t0_hdr_t *originalTransportHeader =
+               (sr_icmp_t0_hdr_t *) getIcmpHeaderFromIpHeader(originalDatagram);
+            
+            /* Perform mapping on embedded payload */
+            originalTransportHeader->ident = natMapping->aux_ext;
+            originalDatagram->ip_dst = sr_get_interface(sr,
+               IpGetPacketRoute(sr, ntohl(packet->ip_dst))->interface)->ip;
+         }
+         
+         /* Update ICMP checksum */
+         icmpPacketHeader->icmp_sum = 0;
+         icmpPacketHeader->icmp_sum = cksum(icmpPacketHeader, icmpLength);
+         
+         /* Rewrite actual packet header. */
+         packet->ip_src = sr_get_interface(sr,
+            IpGetPacketRoute(sr, ntohl(packet->ip_dst))->interface)->ip;
+         
+         IpForwardIpPacket(sr, packet, length, receivedInterface);
       }
    }
    else if (packet->ip_p == ip_protocol_tcp)
@@ -1043,72 +1161,48 @@ static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t
          
          IpForwardIpPacket(sr, packet, length, receivedInterface);
       }
-      else if (icmpPacketHeader->icmp_type == icmp_type_desination_unreachable)
+      else 
       {
-         /* This packet is actually associated with a stream. */
-         sr_icmp_t3_hdr_t *unreachablePacketHeader = (sr_icmp_t3_hdr_t *) icmpPacketHeader;
          int icmpLength = length - getIpHeaderLength(packet);
-         sr_ip_hdr_t *originalDatagram = (sr_ip_hdr_t*) (unreachablePacketHeader->data);
-         sr_tcp_hdr_t *originalTransportHeader = getTcpHeaderFromIpHeader(originalDatagram);
-         
-         assert(natMapping);
-         assert(originalDatagram->ip_p == ip_protocol_tcp);
-         
-         /* Perform mapping on embedded payload */
-         originalTransportHeader->sourcePort = natMapping->ip_int;
-         originalDatagram->ip_src = natMapping->ip_int;
-         
-         /* Update ICMP checksum */
-         unreachablePacketHeader->icmp_sum = 0;
-         unreachablePacketHeader->icmp_sum = cksum(unreachablePacketHeader, icmpLength);
-         
-         /* Rewrite actual packet header. */
-         packet->ip_dst = natMapping->ip_int;
-         
-         IpForwardIpPacket(sr, packet, length, receivedInterface);
-      }
-      else if (icmpPacketHeader->icmp_type == icmp_type_time_exceeded)
-      {
-         /* This packet is actually associated with a stream. */
-         sr_icmp_t11_hdr_t *exceededPacketHeader = (sr_icmp_t11_hdr_t *) icmpPacketHeader;
-         int icmpLength = length - getIpHeaderLength(packet);
-         sr_ip_hdr_t *originalDatagram = (sr_ip_hdr_t*) (exceededPacketHeader->data);
-         
-         assert(natMapping);
-         
-         if (natMapping->type == nat_mapping_tcp)
+         sr_ip_hdr_t * originalDatagram;
+         if (icmpPacketHeader->icmp_type == icmp_type_desination_unreachable)
          {
-            sr_tcp_hdr_t *originalTransportHeader = (sr_tcp_hdr_t*) (((uint8_t*) icmpPacketHeader)
-               + getIpHeaderLength(packet));
+            /* This packet is actually associated with a stream. */
+            sr_icmp_t3_hdr_t *unreachablePacketHeader = (sr_icmp_t3_hdr_t *) icmpPacketHeader;
+            originalDatagram = (sr_ip_hdr_t*) (unreachablePacketHeader->data);
+         }
+         else if (icmpPacketHeader->icmp_type == icmp_type_time_exceeded)
+         {
+            sr_icmp_t11_hdr_t *unreachablePacketHeader = (sr_icmp_t11_hdr_t *) icmpPacketHeader;
+            originalDatagram = (sr_ip_hdr_t*) (unreachablePacketHeader->data);
+         }
+            
+         assert(natMapping);
+         
+         if (originalDatagram->ip_p == ip_protocol_tcp)
+         {
+            sr_tcp_hdr_t *originalTransportHeader = getTcpHeaderFromIpHeader(originalDatagram);
             
             /* Perform mapping on embedded payload */
-            originalTransportHeader->sourcePort = natMapping->ip_int;
+            originalTransportHeader->sourcePort = natMapping->aux_int;
             originalDatagram->ip_src = natMapping->ip_int;
-            
-            /* Update ICMP checksum */
-            exceededPacketHeader->icmp_sum = 0;
-            exceededPacketHeader->icmp_sum = cksum(exceededPacketHeader, icmpLength);
-            
-            /* Rewrite actual packet header. */
-            packet->ip_dst = natMapping->ip_int;
          }
-         else if (natMapping->type == nat_mapping_icmp)
+         else if (originalDatagram->ip_p == ip_protocol_icmp)
          {
-            /* T0 & T8 are the only types of ICMP messages that can generate 
-             * an TTL Exceeded packet in response. */
             sr_icmp_t0_hdr_t *originalTransportHeader =
-               (sr_icmp_t0_hdr_t *) (((uint8_t*) icmpPacketHeader) + getIpHeaderLength(packet));
+               (sr_icmp_t0_hdr_t *) getIcmpHeaderFromIpHeader(originalDatagram);
             
             /* Perform mapping on embedded payload */
             originalTransportHeader->ident = natMapping->aux_int;
-            
-            /* Handle IP address remap */
-            packet->ip_dst = natMapping->ip_int;
+            originalDatagram->ip_src = natMapping->ip_int;
          }
-         else
-         {
-            return;
-         }
+         
+         /* Update ICMP checksum */
+         icmpPacketHeader->icmp_sum = 0;
+         icmpPacketHeader->icmp_sum = cksum(icmpPacketHeader, icmpLength);
+         
+         /* Rewrite actual packet header. */
+         packet->ip_dst = natMapping->ip_int;
          
          IpForwardIpPacket(sr, packet, length, receivedInterface);
       }
@@ -1122,343 +1216,6 @@ static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t
       
       natRecalculateTcpChecksum(packet, length);
       IpForwardIpPacket(sr, packet, length, receivedInterface);
-   }
-}
-
-/**
- * natPacketDestination()\n
- * @brief Checks NAT lookup table to find the destination of a received packet.
- * @param sr pointer to the simple router state structure.
- * @param packet pointer to the received IP datagram.
- * @param length length of the received IP datagram.
- * @param receivedInterface pointer to the interface structure on which the packet was received.
- * @param associatedMapping an output value of the associated NAT mapping if one exists. Valid 
- *        when INBOUND or OUTBOUND are returned. Memory needs to be allocated by the calling 
- *        function for this to be populated.
- * @return NAT_PACKET_FOR_ROUTER if the packet is for us.
- * @return NAT_PACKET_DROP if the packet should be dropped (bad checksum, unsupported protocol, etc.)
- * @return NAT_PACKET_OUTBOUND if the packet is traversing the NAT from internal -> external.
- * @return NAT_PACKET_INBOUND if the packet is traversing the NAT from external -> internal.
- * @return NAT_PACKET_DEFLECTION if the packet is not traversing the NAT (external -> external).
- */
-static NatDestinationResult_t natPacketDestination(sr_instance_t * sr, 
-   sr_ip_hdr_t * const packet, unsigned int length, sr_if_t const * const receivedInterface,
-   sr_nat_mapping_t * associatedMapping)
-{
-   sr_nat_mapping_t * natLookupResult = NULL;
-   if (getInternalInterface(sr)->ip == receivedInterface->ip)
-   {
-      if (IpDestinationIsUs(sr, packet))
-      {
-         return NAT_PACKET_FOR_ROUTER;
-      }
-      
-      if (packet->ip_p == ip_protocol_tcp)
-      {
-         sr_tcp_hdr_t * const tcpHdr = (sr_tcp_hdr_t * const ) (((uint8_t*) packet)
-            + getIpHeaderLength(packet));
-         
-         if (!TcpPerformIntegrityCheck(packet, length))
-         {
-            LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
-            return NAT_PACKET_DROP;
-         }
-         
-         natLookupResult = sr_nat_lookup_internal(sr->nat, ntohl(packet->ip_src),
-            ntohs(tcpHdr->sourcePort), nat_mapping_tcp);
-         
-         if ((natLookupResult == NULL) && (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M))
-         {
-            /* The packet is an outbound SYN. Make a mapping. */
-            natLookupResult = sr_nat_insert_mapping(sr->nat, ntohl(packet->ip_src),
-               ntohs(tcpHdr->sourcePort), nat_mapping_tcp);
-         }
-         else if ((natLookupResult->conns->connectionState != nat_conn_connected) 
-            && (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M))
-         {
-            if (natLookupResult->conns->connectionState == nat_conn_inbound_syn_pending)
-            {
-               /* Simulataneous open successful */
-            }
-            else if (natLookupResult->conns->connectionState == nat_conn_time_wait)
-            {
-               natLookupResult->conns->connectionState = nat_conn_outbound_syn;
-            }
-         }
-
-         if (associatedMapping != NULL )
-         {
-            memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-         }
-         free(natLookupResult);
-         
-         return NAT_PACKET_OUTBOUND;
-      }
-      else if (packet->ip_p == ip_protocol_icmp)
-      {
-         sr_icmp_hdr_t * const icmpHdr =
-            (sr_icmp_hdr_t * const ) (((uint8_t*) packet) + getIpHeaderLength(packet));
-         
-         if (!IcmpPerformIntegrityCheck(icmpHdr, length - getIpHeaderLength(packet)))
-         {
-            LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
-            return NAT_PACKET_DROP;
-         }
-         
-         if (icmpHdr->icmp_type == icmp_type_desination_unreachable)
-         {
-            /* Rather than attempting to find an associated ICMP mapping, we need to 
-             * find an associated TCP mapping. */
-            sr_icmp_t3_hdr_t * const icmpUnreachHdr =
-               (sr_icmp_t3_hdr_t * const ) icmpHdr;
-            
-            /* The data section of an ICMP destination unreachable should be 
-             * the associated packet's IP header and first 8 bytes of the IP 
-             * payload. */
-            sr_ip_hdr_t * const errorPacket =
-               (sr_ip_hdr_t * const ) icmpUnreachHdr->data;
-            
-            if (errorPacket->ip_p == ip_protocol_tcp)
-            {
-               sr_tcp_hdr_t * const errorTcpHdr = (sr_tcp_hdr_t * const ) (((uint8_t*) errorPacket)
-                  + getIpHeaderLength(errorPacket));
-               natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(errorTcpHdr->sourcePort),
-                  nat_mapping_tcp);
-               if (natLookupResult != NULL)
-               {
-                  /* Hmm...seems like an okay mapping. */
-                  if (associatedMapping != NULL)
-                  {
-                     memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-                  }
-                  free(natLookupResult);
-                  
-                  return NAT_PACKET_INBOUND;
-               }
-               else
-               {
-                  /* No associated mapping. Drop it like it's hot! */
-                  return NAT_PACKET_DROP;
-               }
-            }
-            else if (errorPacket->ip_p == ip_protocol_icmp)
-            {
-               sr_icmp_t0_hdr_t * const errorIcmpHdr = (sr_icmp_t0_hdr_t * const ) (((uint8_t*) errorPacket)
-                  + getIpHeaderLength(errorPacket));
-               natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(errorIcmpHdr->ident),
-                  nat_mapping_icmp);
-               if (natLookupResult != NULL)
-               {
-                  /* Hmm...seems like an okay mapping. */
-                  if (associatedMapping != NULL)
-                  {
-                     memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-                  }
-                  free(natLookupResult);
-                  
-                  return NAT_PACKET_INBOUND;
-               }
-               else
-               {
-                  /* No associated mapping. Drop it like it's hot! */
-                  return NAT_PACKET_DROP;
-               }
-            }
-            else
-            {
-               /* Unsupported protocol. No way we have a mapping. */
-               return NAT_PACKET_DROP;
-            }
-         }
-         else if ((icmpHdr->icmp_type == icmp_type_echo_reply)
-            || (icmpHdr->icmp_type == icmp_type_echo_request))
-         {
-            sr_icmp_t0_hdr_t * const icmpPingHdr =
-               (sr_icmp_t0_hdr_t * const ) icmpHdr;
-            
-            natLookupResult = sr_nat_lookup_internal(sr->nat, ntohl(packet->ip_src), ntohs(icmpPingHdr->ident),
-               nat_mapping_icmp);
-            if (natLookupResult == NULL)
-            {
-               natLookupResult = sr_nat_insert_mapping(sr->nat, ntohl(packet->ip_src), ntohs(icmpPingHdr->ident),
-                  nat_mapping_icmp);
-            }
-            
-            if (associatedMapping != NULL)
-            {
-               memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-            }
-            
-            free(natLookupResult);
-            
-            return NAT_PACKET_OUTBOUND;
-         }
-         else
-         {
-            /* Non-required ICMP message type. To hell with best effort. */
-            return NAT_PACKET_DROP;
-         }
-      }
-      else
-      {
-         /* Unknown protocol type. */
-         return NAT_PACKET_DROP;
-      }
-   }
-   else
-   {
-      if (!IpDestinationIsUs(sr, packet))
-      {
-         /* If an external host wants to traverse the NAT, it would have sent 
-          * the packet to us! Assume we are supposed to act like a router and 
-          * forward to another external interface. */
-         return NAT_PACKET_DEFLECTION;
-      }
-      
-      if (packet->ip_p == ip_protocol_icmp)
-      {
-         sr_icmp_hdr_t * const icmpHdr = (sr_icmp_hdr_t * const ) (((uint8_t*) packet)
-            + getIpHeaderLength(packet));
-         
-         if (!IcmpPerformIntegrityCheck(icmpHdr, length - getIpHeaderLength(packet)))
-         {
-            LOG_MESSAGE("ICMP checksum of received packet failed. Dropping.\n");
-            return NAT_PACKET_DROP;
-         }
-         
-         if (icmpHdr->icmp_type == icmp_type_desination_unreachable)
-         {
-            /* Attempt to fulfill RFC-5382 REQ-9. Check for an associated TCP 
-             * connection for this ICMP error packet. */
-            sr_icmp_t3_hdr_t * const icmpUnreachHdr =
-               (sr_icmp_t3_hdr_t * const ) icmpHdr;
-            
-            /* The data section of an ICMP destination unreachable should be 
-             * the associated packet's IP header and first 8 bytes of the IP 
-             * payload. */
-            sr_ip_hdr_t * const errorPacket =
-               (sr_ip_hdr_t * const ) icmpUnreachHdr->data;
-            sr_tcp_hdr_t * const errorTcpHdr =
-               (sr_tcp_hdr_t * const ) (((uint8_t*) errorPacket)
-                  + getIpHeaderLength(errorPacket));
-            
-            if (errorPacket->ip_p == ip_protocol_tcp)
-            {
-               natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(errorTcpHdr->sourcePort),
-                  nat_mapping_tcp);
-               if (natLookupResult != NULL)
-               {
-                  /* Hmm...seems legit. */
-                  if (associatedMapping != NULL)
-                  {
-                     memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-                  }
-                  
-                  free(natLookupResult);
-                  return NAT_PACKET_INBOUND;
-               }
-               else
-               {
-                  /* No associated mapping. Drop it like it's hot! */
-                  return NAT_PACKET_DROP;
-               }
-            }
-            else
-            {
-               /* Unsupported protocol. No way we have a mapping. */
-               return NAT_PACKET_DROP;
-            }
-         }
-         else if ((icmpHdr->icmp_type == icmp_type_echo_reply) 
-            || (icmpHdr->icmp_type == icmp_type_echo_request))
-         {
-            sr_icmp_t0_hdr_t * const icmpPingHdr =
-               (sr_icmp_t0_hdr_t * const ) icmpHdr;
-            natLookupResult = sr_nat_lookup_external(sr->nat, ntohs(icmpPingHdr->ident),
-               nat_mapping_icmp);
-            if (natLookupResult != NULL)
-            {
-               if (associatedMapping != NULL)
-               {
-                  memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-               }
-               
-               free(natLookupResult);
-               return NAT_PACKET_INBOUND;
-            }
-            else
-            {
-               /* Assume it is for us. ICMP handling code will reject it if 
-                * necessary. */
-               return NAT_PACKET_FOR_ROUTER;
-            }
-         }
-         else
-         {
-            /* To hell with best effort. */
-            return NAT_PACKET_DROP;
-         }
-      }
-      else if (packet->ip_p == ip_protocol_tcp)
-      {
-         /* So much easier than ICMP. Lookup and see what the story is. */
-         sr_tcp_hdr_t * const tcpHdr = (sr_tcp_hdr_t * const ) (((uint8_t*) packet)
-            + getIpHeaderLength(packet));
-         
-         if (!TcpPerformIntegrityCheck(packet, length))
-         {
-            LOG_MESSAGE("TCP checksum of inbound packet failed. Dropping packet.\n");
-            return NAT_PACKET_DROP;
-         }
-         
-         pthread_mutex_lock(&(sr->nat->lock));
-         natLookupResult = natTrustedLookupExternal(sr->nat, ntohs(tcpHdr->destinationPort),
-            nat_mapping_tcp);
-         if (natLookupResult != NULL)
-         {
-            if ((natLookupResult->conns->connectionState != nat_conn_connected) 
-               && (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M))
-            {
-               if (natLookupResult->conns->connectionState == nat_conn_outbound_syn)
-               {
-                  LOG_MESSAGE("Mapping from %u.%u.%u.%u:%u to %u now connected.\n", 
-                     (natLookupResult->ip_int >> 24) & 0xFF, (natLookupResult->ip_int >> 16) & 0xFF, 
-                     (natLookupResult->ip_int >> 8) & 0xFF, natLookupResult->ip_int & 0xFF, 
-                     natLookupResult->aux_int, natLookupResult->aux_ext);
-                  natLookupResult->conns->connectionState = nat_conn_connected;
-               }
-            }
-            natLookupResult->last_updated = time(NULL);
-            
-            if (associatedMapping != NULL)
-            {
-               memcpy(associatedMapping, natLookupResult, sizeof(sr_nat_mapping_t));
-            }
-            
-            pthread_mutex_unlock(&(sr->nat->lock));
-            return NAT_PACKET_INBOUND;
-         }
-         else if (ntohs(tcpHdr->offset_controlBits) & TCP_SYN_M)
-         {
-            /* Assume external client is attempting a simultaneous open. */
-            natLookupResult = natTrustedCreateMapping(sr->nat, 0, ntohs(tcpHdr->destinationPort), nat_mapping_tcp);
-            natLookupResult->ip_ext = ntohl(packet->ip_src);
-            return NAT_PACKET_INBOUND;
-         }
-         else
-         {
-            /* Assume it is for us. TCP handling code will reject it with a 
-             * port unreachable. */
-            pthread_mutex_unlock(&(sr->nat->lock));
-            return NAT_PACKET_FOR_ROUTER;
-         }
-      }
-      else
-      {
-         /* Apparently my best effort is just not good enough. Unsupported 
-          * protocol. */
-         return NAT_PACKET_DROP;
-      }
    }
 }
 

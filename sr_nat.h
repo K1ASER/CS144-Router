@@ -74,11 +74,6 @@ typedef struct sr_nat_mapping
    struct sr_nat_mapping *next;
 } sr_nat_mapping_t;
 
-typedef struct
-{
-   sr_nat_tcp_conn_state_t connectionState;
-} sr_nat_pending_tcp_conn_t;
-
 typedef struct sr_nat
 {
    /* add any fields here */
