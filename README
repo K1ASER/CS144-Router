@@ -80,7 +80,9 @@ NAT supports all required ICMP packets as specified by NAT RFCs, even though
 they were not required by the lab (I saw the discussion on Piazza after I had 
 already implemented it).  For this reason, the NAT will allow Destination 
 Unreachable and Time Expired ICMP packets to traverse the NAT if an associated 
-mapping exists.
+mapping exists.  It also makes the handling of ICMP packets look much more 
+complicated (since there are now packets inside of packets on which we are 
+performing NAT table lookups).
 
 NAT file as some functions labeled as "trusted" in the function name.  These 
 functions are non-thread safe counterparts to the original provided API.  
