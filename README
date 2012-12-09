@@ -1,116 +1,124 @@
 user: jlenz
+Late extension was taken on this assignment.
 
 Introduction:
-This program implements the static routing requirements of Lab 3 of CS144. All 
-deviations from the requirements as well as design choices that were made will 
-be defined in this file.
+This program implements the NAT and static routing requirements of Lab 5 of 
+CS144. All deviations from the requirements as well as design choices that 
+were made will be defined in this file.
 
-High Level Design:
-This section explains the high level design of my software solution.  Some are 
-informative while others point out any quirks of the implementation that might 
-make the code more difficult to understand.
+Design Notes:
+All functionality from Lab 3 is in tact if the program is run without the -n 
+flag.  All shortcomings of the previous submission have been corrected.  In 
+addition, except for making some of the functions publically accessable and 
+bug fixes, the sr_router.c is largly unchanged from Lab 3.  New functionality 
+was placed in the sr_nat.c file.
 
-One key feature of my implementation is I did not require changing the 
-sr_instance structure from what was provided.  For this reason, I didn't need 
-to perform any additional initialization in order to route packets.
+Unlike Lab 3, the NAT allows (not exactly sure what the "technical term" is 
+here) packet deflection.  What this means is that if a packet is received on 
+an interface and the NAT determines the packet's route should be out the same 
+interface that the packet was received, the NAT will route the packet back out 
+the same interface.  If this was not the case, the two HTTP servers could not 
+talk to each other in the lab's setup.  Since the NAT is the default gateway 
+for both of the servers, it made sense to have this functionality.
 
-All functions contain a function comment block header in Doxygen format. It 
-explains which layer of the network stack the function resides, provides a 
-brief explanation, provides explanation of the input parameters, and 
-provides an explanation of the return value.
+I modified the Makefile in this project to do an incremental build more along 
+what I am used to seeing so objects stay in a folder separate from the 
+source.  I also fixed the file so the Cygwin define will get added correctly 
+for newer (1.7.x) and 64-bit versions of Cygwin.  For this reason the all, 
+sr, clean, and submit targets work fine, but other targets that happened to 
+be in the Makefile (such as sr.purify or dist) may not as a result (since I 
+didn't know what they were for...).  There should be no reason the old 
+Makefile would not work (provided you add sr_nat.c to the list of sources) 
+if this an issue.
 
-All functions added to sr_router.c start with the name of the network layer 
-that its functionality is expected to live (namely "link" and "network").  It 
-is also reiterated in the function comment block headers.
+New packet headers for now needed types have been added to sr_protocol.h (such 
+as TCP headers and ICMP type 11 and type 3 headers).
 
-All packets are sent in the sr_router.c file to keep the code cleaner.  In 
-order to handle ARP request timeouts which are calculated in the sr_arpqueue.c 
-file, the sr_router file exposes two API functions: LinkSendArpRequest() which 
-sends an ARP packet when a retry is required and 
-NetworkSendTypeThreeIcmpPacket() used when the ARP request retries out.
+When unspecified, rather than choosing what the sample solution did, I 
+prefered to lean on the side of what a "real" NAT would do.  For example, the 
+sample solution allows the HTTP servers to ping the internal interface of the 
+router, and my solution explicitly forbids this.  
 
-Functions that malloc() all call free() on that memory before the function 
-returns.  This is to keep the locations of where memory is allocated tightly 
-coupled to where it is returned.  The one exception to this is when packets 
-are queued with the ARP request (which is done by the starter code).  In this 
-case the memory is freed when the ARP reply is received or when the ARP 
-request retries out.  It also means that no other function is expected to free 
-a pointer passed to it.
+NAT will fail "closed" rather than fail "open" when an unsupported protocol is 
+detected.  Thus, only ICMP and TCP can traverse the NAT (UDP cannot).  In the 
+case that an unsupported protocol attempt to traverse the NAT, the NAT 
+silently drops the packet.
 
-The IP identify field is implemented like a free running sequence number. When 
-the router has to originate packets it puts this number in the header and 
-increments it allowing it to wrap around.  This really isn't necessary since 
-the router always sets the "don't fragment" bit in the header.
+The external ports & ICMP identifiers are created in series starting at 
+50000 and going up to 59999.  Separate linear allocations are done 
+independantly for TCP and ICMP (as in if ICMP creates a mapping for 50000, 
+a TCP connection can also have a mapping for 50000).  Note: there is a slight 
+shortcoming in the code where if there are 10,000 active mapping for a 
+provided type the code will enter an infinite loop when it tries to allocate 
+the 10,001st.  Considering this is a LOT of connections to be active at one 
+time, I didn't think to put handling in for this case.
 
-The router's default TTL is 64.  I chose this since it is the default ping TTL 
-in Linux.  This could be changed easily since it is abstracted in a define.
+A new TCP connection is created with the NAT detects a SYN packet sent in 
+either direction.  It will be promoted to the "established" state if the NAT 
+sees a SYN sent in BOTH directions.  It will be demoted back to "transitory" 
+when a FIN is sent on the connection in EITHER direction.
 
-Like in past labs, my endianness strategy is that if a value is in a packet, 
-it MUST be network order and ALL others must be in host format. The only 
-exception to this is the interface structures store network address in network 
-format (thank you Piazza for pointing this out!).
+Simultaneous open is supported.  The amount of time the NAT will hold the 
+packet is the same as the transitory timeout.  One caveat is that a mapping 
+must exist prior to attempting a simultaneous open.  Since this process works 
+the same as NAT hole-punching as described on Piazza, this seemed like an 
+acceptable requirement.
 
-Like in past labs, LOG_MESSAGE directives have been used to log to standard 
-error. They are off by default, but can be enabled by defining 
-DONT_DEFINE_UNLESS_DEBUGGING.  There is one that is not turned off, and that 
-is the case in which an ARP request retries out.
+TCP mapping timeouts are tracked at a connection level (rather then a mapping 
+level).  When the connection times out, it is deleted from the list of 
+connections on that mapping.  When no more connections exist, the mapping is 
+torn down.
 
-Design Limitations:
-This section lays out some of the limitations explicitly.  These were done 
-mostly because they were not explicit in the lab, but assumed.
-- Router supports IPv4 only.
-- Router does not support performing IP fragmentation on packets based on link 
-  MTU.  Nor does it reconstruct packets sent to it's IP address.
+ICMP mapping timeouts are tracked as a mapping level (since the timeout is 
+always the same and there is no means of tracking individual connections).
 
-API Expansions and Alterations from Starter Code:
-I attempted to keep all files except sr_router.c/.h and sr_arpcache.c as 
-unaltered as possible to keep grading easier. Places I had to differ are 
-explained below.
-sr_rt.c/sr_rt.h
-- Added function sr_get_rt() that gets a routing table entry by the interface 
-  name, same as sr_get_interface() in sr_if.h
-sr_router.h
-- Renamed "template" field in sr_instance to "template_name." This was causing 
-  the C++ compiler (my testing framework is written in C++ and was sharing the 
-  interface) to have issues since template is a reserved keyword in the 
-  language. This caused changes in other files that referenced this field.
-sr_protocol.h
-- Added Type and Code enumerations for ICMP messages.
-- Added define for IP address length.
-sr_arpcache.h
-- Added pointer to the interface being ARPed in the ARP request structure.
-sr_arpcache.c
-- Initialized times_sent in sr_arpcache_queuereq() to 0 if the request was new 
-  (didn't already exist in the queue). I did this so that I could use it as a 
-  queue to send the first arp request right away.  Look for a Note to Grader 
-  comment explaining this in the code.
+The timeout for a NAT connection is reset each time is is looked up.  This is 
+done based on the assumption that you would not look up a mapping unless there 
+was traffic that caused you to be interested in it.
 
-Miscellaneous Notes:
-These contain not notes about my implementation, but my opinion on the Lab in 
-general.  Hopefully these suggestions will help the next CS 144 class.
+NAT supports all required ICMP packets as specified by NAT RFCs, even though 
+they were not required by the lab (I saw the discussion on Piazza after I had 
+already implemented it).  For this reason, the NAT will allow Destination 
+Unreachable and Time Expired ICMP packets to traverse the NAT if an associated 
+mapping exists.
 
-In attempting to keep the starter code as unaltered as possible, I ran into 
-style concerns about the naming of the starter code. While "convention" is a 
-strong motivator to keep parameter names one way over another, readability 
-should be more important. For example, the default parameter names for ARP 
-packet headers are done the way they are so they match the ARP RFC.  However,
-how am I supposed to remember what ar_pln is supposed to mean unless I've 
-memorized the RFC? Making these parameters into English, like 
-ProtocolAddressLength, is much easier to understand. This ambiguous naming was 
-the cause of many of my bugs because I was checking the incorrect field in the 
-packet header. 
+NAT file as some functions labeled as "trusted" in the function name.  These 
+functions are non-thread safe counterparts to the original provided API.  
+They differ by both assuming the NAT mutex is locked and by providing a 
+shared pointer rather than a copy.  These are used for when modification of 
+the mapping is required (such as adding a new connection).
 
-Doxygen is a great tool.  I use it professionally, hence my use of it in this 
-lab.  When you provide a group of people with a large code base that they are 
-expected to understand, it may be useful to do the same and host the output on 
-the CS 144 website for students to browse.
+My usual strategy for endianness has been that data in a packet should be in 
+network order, and ALL other data should be in host order.  However, I broke 
+this tennant with the NAT mappings.  Since NAT mappings are looked up with 
+pure equal and not equal operations, and are usually performed on data in 
+packets, it made sense to store mappings in network order.
 
-I heard from past classes had to run their code through some network simulator 
-Stanford had on campus. Based on what I heard from them (granted I have a 
-sample size of 1), it seems he EC2 setup is far superior for a few reasons.  
-One of the big ones was being able to debug on a local machine allowing us to 
-keep our full development environment (which was great for me since I'm 
-remote!). I was overwhelmed at first looking at the hoops I had to jump 
-through to get it setup, but I found it fairly painless so long as I followed 
-the instructions.  Now all we have to do is fix the AWS NAT issue so we can 
-ping the router from the internet...
+Pseudo-Code of NAT functionality:
+Functionality for TCP and ICMP are very similar, but not quite the same.  
+For this reason, I have chosen in the README to provide pseudo-code to help 
+in understanding the overall NAT program flow when a packet is received.  In 
+addition, the handling, while in small chunks, looks somewhat unweidly in 
+code form.
+There is some extra code in each of the two cases based around any required 
+extra steps (such as creating new connections for TCP or finding assocuated 
+connections to ICMP Unreachable or Time Expired packets), but the flow is 
+still the same in each case.
+
+- NAT receives IP datagram
+- Call appropriate handling function for TCP or ICMP based on IP protocol.
+- Perform an integrity check on the packet (i.e. checksum good).
+- If packet came on the internal interface and has one of our IP addresses, 
+  process packet as in Lab 3. Done.
+- Else if packet came on the internal interface (outbound)
+  - Perform a NAT lookup.
+  - If one does not exist, create one (TCP will only create if packet is a SYN)
+  - Perform NAT translation
+  - Route as in Lab 3. Done.
+- Else (inbound)
+  - If destination is not router and the packet's route keeps it external to the NAT
+    - Allow routing without modification as in Lab 3. Done.
+  - Else if packet if for the router's internal interface, drop the packet. Done.
+  - Else, perform a NAT lookup
+    - If one exists, perform translation and route the packet as in Lab 3.  Done.
+    - Otherwise, assume the packet was actually for the router and process as in Lab 3. Done.

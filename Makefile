@@ -34,7 +34,8 @@ ARCH = -D_DARWIN_
 SOCK = -lresolv
 endif
 
-CFLAGS = -g -Wall -std=c99 -D_DEBUG_ -D_GNU_SOURCE $(ARCH) -DDONT_DEFINE_UNLESS_DEBUGGING
+CFLAGS = -g -Wall -std=c99 -D_DEBUG_ -D_GNU_SOURCE $(ARCH)
+#CFLAGS += -DDONT_DEFINE_UNLESS_DEBUGGING
 
 LIBS= $(SOCK) -lm -lpthread
 PFLAGS= -follow-child-processes=yes -cache-dir=/tmp/${USER} 

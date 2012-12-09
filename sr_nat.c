@@ -79,6 +79,8 @@ static inline sr_if_t* getInternalInterface(sr_instance_t *sr)
 static void sr_nat_destroy_mapping(sr_nat_t* nat, sr_nat_mapping_t* natMapping);
 static void sr_nat_destroy_connection(sr_nat_mapping_t* natMapping, sr_nat_connection_t* connection);
 
+static uint16_t natNextMappingNumber(sr_nat_t* nat, sr_nat_mapping_type mappingType);
+
 static void natHandleReceivedOutboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, 
    unsigned int length, const struct sr_if* const receivedInterface, sr_nat_mapping_t * natMapping);
 static void natHandleReceivedInboundIpPacket(struct sr_instance* sr, sr_ip_hdr_t* packet, 
@@ -534,6 +536,47 @@ void NatUndoPacketMapping(sr_instance_t* sr, sr_ip_hdr_t* mutatedPacket, unsigne
  *-----------------------------------------------------------------------------
  */
 
+static uint16_t natNextMappingNumber(sr_nat_t* nat, sr_nat_mapping_type mappingType)
+{
+   uint16_t startIndex;
+   sr_nat_mapping_t * mappingIterator = nat->mappings;
+   if (mappingType == nat_mapping_icmp)
+   {
+      startIndex = nat->nextIcmpIdentNumber;
+   }
+   else if (mappingType == nat_mapping_tcp)
+   {
+      startIndex = nat->nextTcpPortNumber;
+   }
+   
+   /* Look to see if a mapping already exists for this port number */
+   while (mappingIterator)
+   {
+      if ((mappingIterator->type == mappingType) && (htons(startIndex) == mappingIterator->aux_ext))
+      {
+         /* Mapping already exists for this value. Go to the next one and start the search over. */
+         startIndex = (startIndex == LAST_PORT_NUMBER) ? STARTING_PORT_NUMBER : (startIndex + 1);
+         mappingIterator = nat->mappings;
+      }
+      else
+      {
+         mappingIterator = mappingIterator->next;
+      }
+   }
+   
+   /* Setup the next search start location for the next mapping */
+   if (mappingType == nat_mapping_icmp)
+   {
+      nat->nextIcmpIdentNumber = (startIndex == LAST_PORT_NUMBER) ? STARTING_PORT_NUMBER : (startIndex + 1);
+   }
+   else if (mappingType == nat_mapping_tcp)
+   {
+      nat->nextTcpPortNumber = (startIndex == LAST_PORT_NUMBER) ? STARTING_PORT_NUMBER : (startIndex + 1);
+   }
+   
+   return startIndex;
+}
+
 /**
  * sr_nat_destroy_mapping()\n
  * @brief removes a mapping from the linked list. Based off of ARP cache implementation.
@@ -634,32 +677,8 @@ static sr_nat_mapping_t * natTrustedCreateMapping(sr_nat_t *nat, uint32_t ip_int
 {
    struct sr_nat_mapping *mapping = malloc(sizeof(sr_nat_mapping_t));
    
-   if (type == nat_mapping_icmp)
-   {
-      mapping->aux_ext = htons(nat->nextIcmpIdentNumber);
-      mapping->conns = NULL;
-      if (++nat->nextIcmpIdentNumber > LAST_PORT_NUMBER)
-      {
-         /* TODO: Point of improvement. We should really check if the port 
-          * currently has a mapping.  It is assumed for the sake of this project 
-          * it is assumed 10,000 connections are enough for the life of the 
-          * router program. */
-         nat->nextIcmpIdentNumber = STARTING_PORT_NUMBER;
-      }
-   }
-   else if (type == nat_mapping_tcp)
-   {
-      mapping->aux_ext = htons(nat->nextTcpPortNumber);
-      mapping->conns = NULL;
-      if (++nat->nextTcpPortNumber > LAST_PORT_NUMBER)
-      {
-         /* TODO: Point of improvement. We should really check if the port 
-          * currently has a mapping.  It is assumed for the sake of this project 
-          * it is assumed 10,000 connections are enough for the life of the 
-          * router program. */
-         nat->nextTcpPortNumber = STARTING_PORT_NUMBER;
-      }
-   }
+   mapping->aux_ext = htons(natNextMappingNumber(nat, type));
+   mapping->conns = NULL;
    
    /* Store mapping information */
    mapping->aux_int = aux_int;
